@@ -8,7 +8,7 @@ import { type DayColumn, type MoverRow, type TopRow, type TrendsPageData, trends
 import { AGENT_TEXT, REPO_URL } from '../lib/agent-text';
 import { fmtInt, fmtMult, pad2 } from '../lib/format';
 import { RULES } from '../lib/rules';
-import { BLACK_FRIDAY, DAY, MIN, dayLabel, daysUntil, lastCompleteWeek, shiftWeek, weekEnd, weekLabel, weekNumber } from '../lib/time';
+import { BLACK_FRIDAY, DAY, MIN, dayLabel, daysUntil, isoWeek, shiftWeek, weekEnd, weekLabel, weekNumber } from '../lib/time';
 import { cached } from '../processing/snapshots';
 import { Button, EmptyState, HighlightCard, Kicker } from './components';
 import { Layout, page } from './layout';
@@ -27,20 +27,25 @@ function weekKicker(week: string): string {
 
 function headline(d: TrendsPageData): { node: Child; text: string; sub?: string } {
   const top = d.top_mover;
+  const partial = d.trends.partial;
+  const thisWeek = partial ? 'So far this week' : 'This week';
+  const vs = partial ? 'than in the same days last week' : 'than last week';
+  const soFarNote = partial ? 'Week so far, compared with last week up to the same day and hour.' : undefined;
   if (top && top.multiplier !== null && top.multiplier >= 1.1) {
     const m = fmtMult(top.multiplier);
     const label = quoted(top.label);
     return {
-      node: <>This week humans delegated {label} <span class="mint">{m}</span> more than last week.</>,
-      text: `This week humans delegated ${label} ${m} more than last week.`,
+      node: <>{thisWeek} humans delegated {label} <span class="mint">{m}</span> more {vs}.</>,
+      text: `${thisWeek} humans delegated ${label} ${m} more ${vs}.`,
+      sub: soFarNote,
     };
   }
   const lead = d.top[0];
   if (lead) {
     const label = quoted(lead.label);
     return {
-      node: <>This week humans delegated {label} more than anything else.</>,
-      text: `This week humans delegated ${label} more than anything else.`,
+      node: <>{thisWeek} humans delegated {label} more than anything else.</>,
+      text: `${thisWeek} humans delegated ${label} more than anything else.`,
       sub: top ? 'No task grew by more than 10% week over week.' : `Week-over-week changes appear once last week also had at least ${K} agents behind a task.`,
     };
   }
@@ -119,10 +124,10 @@ const WEEK_RE = /^\d{4}-W(0[1-9]|[1-4]\d|5[0-3])$/;
 const firstWeek = (env: AppEnv['Bindings']) => cached(env, 'trends:first-week', 10 * MIN, async () =>
   (await env.DB.prepare('SELECT MIN(week) AS w FROM traces').first<{ w: string | null }>())?.w ?? null);
 
-// /trends always points at the latest complete week; old ?week= links move to the per-week URL for good.
+// /trends always points at the current week (so far); old ?week= links move to the per-week URL for good.
 app.get('/trends', c => {
   const q = (c.req.query('week') ?? '').toUpperCase().replace(/^(\d{4})-W/, '$1-W');
-  const latest = lastCompleteWeek(Date.now());
+  const latest = isoWeek(Date.now());
   if (WEEK_RE.test(q) && q <= latest) return c.redirect(`/trends/${q}`, 301);
   return c.redirect(`/trends/${latest}`, 302);
 });
@@ -132,7 +137,7 @@ app.get('/trends/:week', async c => {
   const raw = c.req.param('week');
   const week = raw.toUpperCase();
   if (raw !== week && WEEK_RE.test(week)) return c.redirect(`/trends/${week}`, 301);
-  const latest = lastCompleteWeek(now);
+  const latest = isoWeek(now);
   const first = await firstWeek(c.env);
   if (!WEEK_RE.test(week) || week > latest || (week !== latest && (!first || week < first))) return notFoundPage(c);
   const d = await trendsPageData(c.env, { week, now });
@@ -145,7 +150,7 @@ app.get('/trends/:week', async c => {
       description={`${weekKicker(d.week)}. ${h.text} Specific tasks, counted only when ${K}+ different people are behind a number.`}
       ogImage={`/card/trends/${d.week}.png`} canonical={`/trends/${d.week}`}>
       <div class="tr-head">
-        <Kicker>{weekKicker(d.week)}</Kicker>
+        <Kicker>{weekKicker(d.week)}{d.trends.partial ? ' · so far' : ''}</Kicker>
         <nav class="tr-weeknav" aria-label="Weeks">
           {first && d.prev_week >= first ? <a href={`/trends/${d.prev_week}`} rel="prev">← week {weekNumber(d.prev_week)}</a> : <span></span>}
           {d.week < d.latest_week ? <a href={`/trends/${next}`} rel="next">week {weekNumber(next)} →</a> : null}
@@ -287,7 +292,7 @@ app.get('/methodology', c => {
           </Section>
 
           <Section id="trends" n={5}>
-            <p>Every trace is named by a <strong>specific task</strong>: the agent's own name for it (“Cancel Netflix subscription”), or one extracted from its description. Different wordings of the same task count as one (“cancel my Netflix plan” is the same task). Tasks are totalled week by week. A task is <strong>trending</strong> when it is among the week's {R.TRENDING_TOP} most delegated, or grew {R.TRENDING_MIN_MULTIPLIER}× or more over the week before. Weeks are <strong>ISO weeks in UTC</strong>, Monday to Sunday; the page shows the last complete week. A mover's multiplier is this week's traces divided by last week's, and only appears when both weeks pass the <N>{K}</N>-person threshold and last week had at least <N>{R.TREND_MIN_BASE}</N> traces (growth on a tiny base is noise). Daily columns follow the same rule per day.</p>
+            <p>Every trace is named by a <strong>specific task</strong>: the agent's own name for it (“Cancel Netflix subscription”), or one extracted from its description. Different wordings of the same task count as one (“cancel my Netflix plan” is the same task). Tasks are totalled week by week. A task is <strong>trending</strong> when it is among the week's {R.TRENDING_TOP} most delegated, or grew {R.TRENDING_MIN_MULTIPLIER}× or more over the week before. Weeks are <strong>ISO weeks in UTC</strong>, Monday to Sunday. The page opens on the current week so far, compared with last week up to the same weekday and hour; past weeks compare complete weeks. A mover's multiplier is this week's traces divided by last week's, and only appears when both weeks pass the <N>{K}</N>-person threshold and last week had at least <N>{R.TREND_MIN_BASE}</N> traces (growth on a tiny base is noise). Daily columns follow the same rule per day.</p>
             <p>Counts grow as more agents join, so a rising number can mean more agents as well as more delegation. Week-over-week multipliers are the fairer read.</p>
           </Section>
 

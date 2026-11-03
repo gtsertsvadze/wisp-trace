@@ -1,6 +1,6 @@
 // Scheduled jobs. Also callable directly (POST /api/admin/run-jobs).
 import type { Bindings } from '../env';
-import { MIN, lastCompleteWeek } from '../lib/time';
+import { MIN, isoWeek, lastCompleteWeek } from '../lib/time';
 import { computeAwards } from './awards';
 import { rebuildDirtyGroups } from './recipes';
 import { dropSnapshots, putSnapshot } from './snapshots';
@@ -28,7 +28,7 @@ export async function runJobs(
           result = await rebuildDirtyGroups(env, { now });
           break;
         case 'trends': {
-          const weeks = [...new Set([lastCompleteWeek(now), ...(opts.week ? [opts.week] : [])])];
+          const weeks = [...new Set([isoWeek(now), lastCompleteWeek(now), ...(opts.week ? [opts.week] : [])])];
           const warmed: Record<string, number> = {};
           for (const week of weeks) {
             await dropSnapshots(env, `trends:${week}`);

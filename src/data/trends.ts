@@ -5,7 +5,7 @@ import type { Bindings } from '../env';
 import type { TrendTaskWeek, WeeklyTrends } from '../types';
 import { RULES } from '../lib/rules';
 import { SHOPPING_VERBS } from '../lib/tasks';
-import { DAY, dayOf, dayStart, lastCompleteWeek, MIN, shiftWeek, weekStart } from '../lib/time';
+import { DAY, dayOf, dayStart, isoWeek, MIN, shiftWeek, weekStart } from '../lib/time';
 import { weeklyTrends } from '../processing/trends';
 import { cached } from '../processing/snapshots';
 
@@ -53,7 +53,7 @@ export interface ShoppingWatch {
 export interface TrendsPageData {
   week: string;
   prev_week: string;
-  latest_week: string;     // last complete week; ?week= can't go past it
+  latest_week: string;     // the current ISO week (so far); ?week= can't go past it
   trends: WeeklyTrends;
   top_mover: TrendTaskWeek | null;
   movers: MoverRow[];      // up to 8, biggest change either way, shown by multiplier desc
@@ -67,7 +67,7 @@ const SHOPPING_SQL = `t.task_id IN (SELECT id FROM tasks WHERE verb IN (${SHOPPI
 const OCT_FROM = Date.UTC(2026, 9, 1);
 const OCT_TO = Date.UTC(2026, 10, 1); // exclusive
 
-async function shoppingWatch(env: Bindings, week: string): Promise<ShoppingWatch> {
+async function shoppingWatch(env: Bindings, week: string, now: number): Promise<ShoppingWatch> {
   const none: ShoppingWatch = { multiplier: null, week_traces: 0, baseline_weekly: 0 };
   const baselineEnd = Math.min(OCT_TO, weekStart(week)); // never let the report week count toward its own baseline
   const baselineDays = Math.round((baselineEnd - OCT_FROM) / DAY);
@@ -84,7 +84,9 @@ async function shoppingWatch(env: Bindings, week: string): Promise<ShoppingWatch
   ]);
   if (!wk || !base || wk.agents < K || base.agents < K || base.n === 0) return none;
   const baselineWeekly = (base.n / baselineDays) * 7;
-  return { multiplier: Math.round((wk.n / baselineWeekly) * 10) / 10, week_traces: wk.n, baseline_weekly: Math.round(baselineWeekly) };
+  // An unfinished week is compared with the baseline for the same number of days.
+  const elapsed = Math.min(1, Math.max(1 / 7, (now - weekStart(week)) / (7 * DAY)));
+  return { multiplier: Math.round((wk.n / (baselineWeekly * elapsed)) * 10) / 10, week_traces: wk.n, baseline_weekly: Math.round(baselineWeekly) };
 }
 
 function pickMovers(all: TrendTaskWeek[]): MoverRow[] {
@@ -132,13 +134,13 @@ function dayColumns(daily: WeeklyTrends['daily']): DayColumn[] {
   });
 }
 
-/** Everything the /trends page renders for `week` (default: last complete week). Cached 60 s on top of weeklyTrends' own cache. */
+/** Everything the /trends page renders for `week` (default: the current week so far). Cached 60 s on top of weeklyTrends' own cache. */
 export async function trendsPageData(env: Bindings, opts: { week?: string; now?: number } = {}): Promise<TrendsPageData> {
   const now = opts.now ?? Date.now();
-  const latest = lastCompleteWeek(now);
+  const latest = isoWeek(now);
   const week = opts.week && isWeekId(opts.week) && opts.week <= latest ? opts.week : latest;
   return cached(env, `trends-page:${week}`, MIN, async () => {
-    const [trends, shopping] = await Promise.all([weeklyTrends(env, { week, now }), shoppingWatch(env, week)]);
+    const [trends, shopping] = await Promise.all([weeklyTrends(env, { week, now }), shoppingWatch(env, week, now)]);
     return {
       week,
       prev_week: shiftWeek(week, -1),

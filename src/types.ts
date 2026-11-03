@@ -256,8 +256,9 @@ export interface TrendTaskWeek {
 }
 
 export interface WeeklyTrends {
-  week: string;             // the (complete) week being reported, e.g. '2026-W44'
+  week: string;             // the week being reported, e.g. '2026-W45'
   prev_week: string;
+  partial: boolean;         // the current, unfinished week: last week is cut at the same weekday and time to compare
   tasks: TrendTaskWeek[];   // published tasks only, by traces desc
   movers: TrendTaskWeek[];  // published tasks with a multiplier, by multiplier desc
   daily: { day: string; traces: number; agents: number; published: boolean }[]; // last 14 days ending yesterday

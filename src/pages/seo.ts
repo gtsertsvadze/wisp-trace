@@ -6,7 +6,7 @@ import { Hono, type Context } from 'hono';
 import type { AppEnv, Bindings } from '../env';
 import { listRecipes } from '../data/recipes';
 import { normalizeRef } from '../api/agents';
-import { MIN, dayOf, lastCompleteWeek } from '../lib/time';
+import { MIN, dayOf, isoWeek, shiftWeek } from '../lib/time';
 import { cached, putSnapshot } from '../processing/snapshots';
 
 const app = new Hono<AppEnv>();
@@ -21,11 +21,12 @@ export async function buildSitemap(env: Bindings, now = Date.now()): Promise<str
   const origin = env.PUBLIC_ORIGIN.replace(/\/+$/, '');
   const urls: Url[] = [
     { loc: '/', changefreq: 'hourly' }, { loc: '/live', changefreq: 'hourly' }, { loc: '/recipes', changefreq: 'hourly' },
-    { loc: '/leaderboards', changefreq: 'daily' }, { loc: '/methodology', changefreq: 'weekly' }, { loc: '/claim', changefreq: 'weekly' },
+    { loc: '/trends', changefreq: 'hourly' }, { loc: '/leaderboards', changefreq: 'daily' }, { loc: '/methodology', changefreq: 'weekly' },
+    { loc: '/claim', changefreq: 'weekly' },
   ];
-  const [{ items }, weeks, agents] = await Promise.all([
+  const [{ items }, first, agents] = await Promise.all([
     listRecipes(env),
-    env.DB.prepare('SELECT DISTINCT week FROM traces WHERE week <= ? ORDER BY week').bind(lastCompleteWeek(now)).all<{ week: string }>(),
+    env.DB.prepare('SELECT MIN(week) AS w FROM traces').first<{ w: string | null }>(),
     env.DB.prepare(
       `SELECT name, COALESCE(last_seen_at, created_at) AS at FROM agents
        WHERE deleted_at IS NULL AND (claim_status = 'claimed' OR is_seed = 1) ORDER BY at DESC LIMIT 20000`,
@@ -38,7 +39,11 @@ export async function buildSitemap(env: Bindings, now = Date.now()): Promise<str
     if (r.status !== 'blocked') urls.push({ loc: r.href, lastmod: at, changefreq: 'daily' });
   }
   for (const [site, at] of sites) urls.push({ loc: `/sites/${encodeURIComponent(site)}`, lastmod: at || null, changefreq: 'daily' });
-  for (const w of weeks.results) urls.push({ loc: `/trends/${w.week}`, changefreq: 'weekly' });
+  // Every weekly page that exists: from the first week with traces through the current week (always at least that one).
+  const current = isoWeek(now);
+  for (let w = first?.w && first.w < current ? first.w : current, i = 0; w <= current && i < 520; w = shiftWeek(w, 1), i++) {
+    urls.push({ loc: `/trends/${w}`, changefreq: w === current ? 'hourly' : 'weekly' });
+  }
   for (const a of agents.results) urls.push({ loc: `/a/${encodeURIComponent(a.name)}`, lastmod: a.at, changefreq: 'daily' });
   const body = urls.map(u =>
     `<url><loc>${xml(origin + u.loc)}</loc>${u.lastmod ? `<lastmod>${dayOf(u.lastmod)}</lastmod>` : ''}${u.changefreq ? `<changefreq>${u.changefreq}</changefreq>` : ''}</url>`,

@@ -29,8 +29,7 @@ export const ASSET_VERSION = '0.1.0';
 export const SITE_ORIGIN = 'https://wisptrace.com';
 export const SITE_TAGLINE =
   'AI agents send Wisptrace the full record of each task they do. Those traces become public profiles, leaderboards, recipes and trends: anonymised and open source.';
-export const X_URL = 'https://x.com/wisptrace';
-export const BLUESKY_URL = 'https://bsky.app/profile/wisptrace.com';
+export const X_URL = 'https://x.com/usewisptrace';
 
 const FONTS_HREF =
   'https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,500;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;500;700&display=swap';
@@ -93,7 +92,7 @@ export function Footer() {
       <a href="/methodology">Methodology</a>
       <a href={REPO_URL} rel="noopener">Source</a>
       <span>
-        Daily stat on <a href={X_URL} rel="noopener">X</a> &amp; <a href={BLUESKY_URL} rel="noopener">Bluesky</a>
+        Daily stat on <a href={X_URL} rel="noopener">X @usewisptrace</a>
       </span>
       <span class="footer-note">Nothing here is faked. Seed agents are always labelled.</span>
     </footer>

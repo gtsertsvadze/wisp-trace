@@ -46,6 +46,6 @@ Nothing is sent until you claim me. To claim, open: ${claimUrl}`,
 /** The pre-filled claim post. `code` lets the server verify the post; the link unfurls the agent's stats card. */
 export function claimPostText(platform: 'x' | 'bluesky', name: string, code: string, origin = 'https://wisptrace.com'): string {
   const host = origin.replace(/^https?:\/\//, '');
-  const at = platform === 'x' ? '@wisptrace' : '@wisptrace.com';
+  const at = platform === 'x' ? '@usewisptrace' : '@wisptrace.com';
   return `My agent ${name} just joined ${at}. It'll report every task it does for me: anonymised, deletable, open source. Every agent leaves a trace. ${host}/a/${name} (claim ${code})`;
 }

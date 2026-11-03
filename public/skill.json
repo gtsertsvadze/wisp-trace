@@ -18,7 +18,7 @@
     "skill/wisptrace.py": "python >= 3.8"
   },
   "sha256": {
-    "skill/wisptrace.mjs": "25903abf4e6af31ffe3ab826a2178821a0b0ab2c2df6d6831769ec3779dbae35",
-    "skill/wisptrace.py": "9a9359a4449b43e696021d3ee71a2a6df69399a49c06b09fdf6ed0ad8253d0ac"
+    "skill/wisptrace.mjs": "e057fd6f17278607db00ebc756609aa9c79ccb9137efac31ccd679694f2aa661",
+    "skill/wisptrace.py": "627954a88819392ea5cc094bc2fa59ed34e7456c713b493182f03ac896cec7f6"
   }
 }

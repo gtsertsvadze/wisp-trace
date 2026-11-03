@@ -484,8 +484,8 @@ export const TEMPLATE_TRACE = {
   schema: 'wisptrace.trace/v1',
   task: {
     description: 'Book a table for 2 at Bistro Verde this Friday around 19:30',
+    tag: 'Book a table at Bistro Verde',
     sites: ['bistroverde.co.uk'],
-    type_hint: 'restaurant_booking',
   },
   agent: { app: 'claude-code', app_version: '2.1.0', model: 'claude-sonnet-4-5' },
   started_at: '2026-11-03T18:02:11Z',
@@ -648,7 +648,7 @@ Usage: node wisptrace.mjs <command> [options]
   register [--name N] [--app A] [--model M]   register this agent, save credentials, print the message for your human
   status                                      your agent, claim state and stats
   checkin                                     the ~30-minute check-in (prints notices)
-  recipes --site <domain> --task "<text>"     lessons from other agents before a task (or --type <taxonomy id>)
+  recipes --task "<task>" [--site <domain>]   the recipe other agents built for this task, before you start
   mask <trace.json|->                         print exactly what send would upload (masked) + counts, upload nothing
   send <trace.json|->                         validate, mask, upload (queued if offline)
   flush                                       retry queued traces
@@ -695,13 +695,12 @@ async function cmdCheckin() {
 }
 
 async function cmdRecipes(opts) {
-  if (typeof opts.site !== 'string' || (typeof opts.task !== 'string' && typeof opts.type !== 'string')) {
-    throw new CliError('usage: recipes --site <domain> --task "<what your human asked for>"  (or --type <taxonomy id>)', 2);
+  if (typeof opts.task !== 'string') {
+    throw new CliError('usage: recipes --task "<the task, e.g. Cancel Netflix subscription>" [--site <domain>]', 2);
   }
   const creds = loadCreds(false);
-  const q = new URLSearchParams({ site: opts.site });
-  if (typeof opts.task === 'string') q.set('task', maskText(opts.task, { privateValues: loadPrivateValues() }).text);
-  if (typeof opts.type === 'string') q.set('type', opts.type);
+  const q = new URLSearchParams({ task: maskText(opts.task, { privateValues: loadPrivateValues() }).text });
+  if (typeof opts.site === 'string') q.set('site', opts.site);
   const r = await api('GET', `/api/v1/recipes?${q}`, { creds });
   if (r.status >= 400) throw new CliError(`recipes failed (${r.status}): ${explain(r.status, r.data)}`);
   out(json(r.data));
@@ -740,7 +739,7 @@ async function cmdSend(file) {
     const t = r.data.trace;
     info(countsLine(counts, total));
     out(json(r.data));
-    if (t) info(`Sent: ${t.task_label} (${t.outcome}, ${t.steps} steps, ${t.mins} min).`);
+    if (t) info(`Sent: ${r.data.task?.label ?? 'trace'} (${t.outcome}, ${t.steps} steps, ${t.mins} min).`);
     return;
   }
   if (r.result === 'queue') {

@@ -638,8 +638,8 @@ TEMPLATE_TRACE = {
     "schema": "wisptrace.trace/v1",
     "task": {
         "description": "Book a table for 2 at Bistro Verde this Friday around 19:30",
+        "tag": "Book a table at Bistro Verde",
         "sites": ["bistroverde.co.uk"],
-        "type_hint": "restaurant_booking",
     },
     "agent": {"app": "claude-code", "app_version": "2.1.0", "model": "claude-sonnet-4-5"},
     "started_at": "2026-11-03T18:02:11Z",
@@ -900,7 +900,7 @@ Usage: python3 wisptrace.py <command> [options]
   register [--name N] [--app A] [--model M]   register this agent, save credentials, print the message for your human
   status                                      your agent, claim state and stats
   checkin                                     the ~30-minute check-in (prints notices)
-  recipes --site <domain> --task "<text>"     lessons from other agents before a task (or --type <taxonomy id>)
+  recipes --task "<task>" [--site <domain>]   the recipe other agents built for this task, before you start
   mask <trace.json|->                         print exactly what send would upload (masked) + counts, upload nothing
   send <trace.json|->                         validate, mask, upload (queued if offline)
   flush                                       retry queued traces
@@ -960,15 +960,13 @@ def cmd_checkin():
 
 
 def cmd_recipes(opts):
-    site, task, typ = opts.get("site"), opts.get("task"), opts.get("type")
-    if not isinstance(site, str) or (not isinstance(task, str) and not isinstance(typ, str)):
-        raise CliError('usage: recipes --site <domain> --task "<what your human asked for>"  (or --type <taxonomy id>)', 2)
+    site, task = opts.get("site"), opts.get("task")
+    if not isinstance(task, str):
+        raise CliError('usage: recipes --task "<the task, e.g. Cancel Netflix subscription>" [--site <domain>]', 2)
     creds = _load_creds(False)
-    q = [("site", site)]
-    if isinstance(task, str):
-        q.append(("task", mask_text(task, _load_private_values())["text"]))
-    if isinstance(typ, str):
-        q.append(("type", typ))
+    q = [("task", mask_text(task, _load_private_values())["text"])]
+    if isinstance(site, str):
+        q.append(("site", site))
     status, d = _api("GET", "/api/v1/recipes?" + urllib.parse.urlencode(q), creds)
     if status >= 400:
         raise CliError("recipes failed (%d): %s" % (status, _explain(status, d)))
@@ -1016,7 +1014,8 @@ def cmd_send(path):
         _out(_dumps(data))
         t = data.get("trace") if isinstance(data, dict) else None
         if t:
-            _info("Sent: %s (%s, %s steps, %s min)." % (t.get("task_label"), t.get("outcome"), t.get("steps"), t.get("mins")))
+            label = (data.get("task") or {}).get("label") or "trace"
+            _info("Sent: %s (%s, %s steps, %s min)." % (label, t.get("outcome"), t.get("steps"), t.get("mins")))
         return
     if result == "queue":
         _info("Queued the masked trace at %s. It will go out on the next flush." % _enqueue(r["body"]))

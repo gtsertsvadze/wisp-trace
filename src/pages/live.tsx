@@ -4,6 +4,7 @@ import type { AppEnv } from '../env';
 import type { PublicFeedItem } from '../types';
 import { feedItems, parseFilter, publicStats, topAgentOfWeek, type FeedFilter } from '../data/live';
 import { fmtInt } from '../lib/format';
+import { RULES } from '../lib/rules';
 import { Layout, page } from './layout';
 import { ChipGroup, EmptyState, Kicker, Outcome, PathLegend, SeedTag, StepPath } from './components';
 
@@ -17,7 +18,7 @@ export function LiveRow({ item, isNew, hidden }: { item: PublicFeedItem; isNew?:
     <li class={`row-card live-row${isNew ? ' is-new' : ''}`} data-key={item.key} data-outcome={item.outcome} hidden={hidden || undefined}>
       <div class="live-task">
         <div class="live-task-name" data-f="task">{item.task}</div>
-        <div class="live-task-kind" data-f="kind">{item.kind}</div>
+        <div class="live-task-kind" data-f="note">{item.note}</div>
       </div>
       <StepPath ticks={item.ticks} class="live-path" />
       <Outcome outcome={item.outcome} />
@@ -35,7 +36,7 @@ export function LiveRow({ item, isNew, hidden }: { item: PublicFeedItem; isNew?:
   );
 }
 
-const TEMPLATE_ITEM: PublicFeedItem = { key: '', task: '', kind: '', outcome: 'done', ticks: '', steps: 0, mins: 0, model: '', app: '', seed: false };
+const TEMPLATE_ITEM: PublicFeedItem = { key: '', task: '', note: '', public: false, outcome: 'done', ticks: '', steps: 0, mins: 0, model: '', app: '', seed: false };
 
 const FILTERS: { key: FeedFilter; label: string }[] = [
   { key: 'all', label: 'All' },
@@ -57,7 +58,7 @@ app.get('/live', async c => {
     <Layout
       c={c}
       title="Live"
-      description="Anonymised traces arriving from AI agents right now: the task type, the step path, the minutes. Never the site or the exact time."
+      description="Traces arriving from AI agents right now: the task (named once several people's agents have done it), the step path, the minutes. Never anyone's own words or the exact time."
       active="live"
       css={['live']}
       scripts={['live']}
@@ -69,8 +70,9 @@ app.get('/live', async c => {
           <Kicker>Live · anonymised</Kicker>
           <h1 class="h1 live-h1">What agents are doing right now.</h1>
           <p class="lead live-lead">
-            Each row is a real task, as the public sees it: the task type, the step path, the minutes. The site and the exact time stay
-            private to the agent's owner.
+            Each row is a real task, as the public sees it. A task shows by name, like “Cancelled Netflix subscription”, once
+            {' '}{RULES.TASK_PUBLIC_MIN_CROWD} different people's agents have done it; until then it reads “Cancelled something”. The
+            agent's own words and the exact time stay private to its owner.
           </p>
         </div>
         <div class="live-counter-wrap">

@@ -2,7 +2,7 @@
 import type { Bindings } from '../env';
 import type { DeadEnd, RecipeStep } from '../types';
 import { RULES } from '../lib/rules';
-import { TASK_TYPES, taskType, typesInTrend } from '../lib/taxonomy';
+import { thirdPerson } from '../lib/tasks';
 import { DAY, dayOf, isoWeek, lastCompleteWeek, MIN } from '../lib/time';
 import { publicDeadEnds, publicSteps } from '../processing/recipes';
 import { cached } from '../processing/snapshots';
@@ -11,41 +11,36 @@ import { ELIGIBLE } from './live';
 
 export interface ModelBoardRow { rank: number; model: string; tasks: number; rate: number }
 export interface ModelBoard {
-  caption: string;        // 'which model books a table best'
+  caption: string;        // 'which model cancels Netflix subscription best'
   week: string;
   rows: ModelBoardRow[];  // up to 4, best success rate first; [] when nothing qualifies
 }
 
-/** 'Book a table' -> 'books a table' (third person for the board caption). */
-export function thirdPerson(imperative: string): string {
-  const [verb = '', ...rest] = imperative.trim().split(/\s+/);
-  const v = verb.toLowerCase();
-  const s = /(s|x|z|ch|sh)$/.test(v) ? `${v}es` : /[^aeiou]y$/.test(v) ? `${v.slice(0, -1)}ies` : `${v}s`;
-  return [s, ...rest].join(' ');
-}
+export { thirdPerson };
 
-async function topTaskType(env: Bindings, week: string): Promise<{ task_type: string; n: number } | null> {
+/** The week's most delegated task whose name is public (and not sensitive). */
+async function topTask(env: Bindings, week: string): Promise<{ task_id: string; label: string; n: number } | null> {
   const r = await env.DB.prepare(
-    `SELECT t.task_type, COUNT(*) AS n FROM traces t JOIN agents a ON a.id = t.agent_id
-     WHERE t.week = ? AND ${ELIGIBLE} AND t.task_type != 'other' GROUP BY t.task_type ORDER BY n DESC LIMIT 1`,
-  ).bind(week).first<{ task_type: string; n: number }>();
+    `SELECT t.task_id, k.label, COUNT(*) AS n FROM traces t JOIN agents a ON a.id = t.agent_id JOIN tasks k ON k.id = t.task_id
+     WHERE t.week = ? AND ${ELIGIBLE} AND k.crowd >= ? AND k.sensitive = 0 AND k.verb != '' GROUP BY t.task_id ORDER BY n DESC LIMIT 1`,
+  ).bind(week, RULES.TASK_PUBLIC_MIN_CROWD).first<{ task_id: string; label: string; n: number }>();
   return r ?? null;
 }
 
 async function computeModelBoard(env: Bindings, now: number): Promise<ModelBoard> {
   // The current week once it has enough traces of its top kind; before that, the last complete week.
   for (const week of [isoWeek(now), lastCompleteWeek(now)]) {
-    const top = await topTaskType(env, week);
+    const top = await topTask(env, week);
     if (!top || top.n < RULES.BOARD_MIN_TASKS_GROUP) continue;
     const { results } = await env.DB.prepare(
       `SELECT t.model, COUNT(*) AS n, COALESCE(SUM(t.outcome = 'done'), 0) AS done, COUNT(DISTINCT t.agent_id) AS ag
        FROM traces t JOIN agents a ON a.id = t.agent_id
-       WHERE t.week = ? AND t.task_type = ? AND ${ELIGIBLE} AND LOWER(t.model) != 'unknown'
+       WHERE t.week = ? AND t.task_id = ? AND ${ELIGIBLE} AND LOWER(t.model) != 'unknown'
        GROUP BY t.model HAVING ag >= ? AND n >= ? ORDER BY (done * 1.0 / n) DESC, n DESC LIMIT 4`,
-    ).bind(week, top.task_type, RULES.BOARD_MIN_AGENTS_GROUP, RULES.BOARD_MIN_TASKS_GROUP).all<{ model: string; n: number; done: number; ag: number }>();
+    ).bind(week, top.task_id, RULES.BOARD_MIN_AGENTS_GROUP, RULES.BOARD_MIN_TASKS_GROUP).all<{ model: string; n: number; done: number; ag: number }>();
     if (results.length < 2) continue;
     return {
-      caption: `which model ${thirdPerson(taskType(top.task_type).recipe)} best`,
+      caption: `which model ${thirdPerson(top.label)} best`,
       week,
       rows: results.map((r, i) => ({ rank: i + 1, model: r.model, tasks: r.n, rate: Math.round((r.done / r.n) * 100) })),
     };
@@ -56,7 +51,7 @@ async function computeModelBoard(env: Bindings, now: number): Promise<ModelBoard
 export const modelBoard = (env: Bindings, now = Date.now()) => cached(env, 'home:model-board', MIN, () => computeModelBoard(env, now));
 
 export interface Spark {
-  group: string;                           // caption subject, e.g. 'gift shopping' or 'all'
+  label: string;                           // caption subject: a public task name, or 'all'
   days: { day: string; traces: number | null }[]; // 14 days ending yesterday; null = below the k-anonymity threshold
   multiplier: number | null;               // week-over-week (null when not publishable)
   published: boolean;                      // enough published days to draw
@@ -64,14 +59,12 @@ export interface Spark {
 
 const enoughDays = (days: Spark['days']) => days.filter(d => d.traces != null).length >= 10;
 
-async function groupDays(env: Bindings, group: string, now: number): Promise<Spark['days']> {
-  const types = typesInTrend(group).filter(id => TASK_TYPES.some(t => t.id === id));
+async function taskDays(env: Bindings, taskId: string, now: number): Promise<Spark['days']> {
   const yesterday = now - DAY;
-  if (!types.length) return [];
   const { results } = await env.DB.prepare(
     `SELECT t.day, COUNT(*) AS traces, COUNT(DISTINCT t.agent_id) AS agents FROM traces t JOIN agents a ON a.id = t.agent_id
-     WHERE t.day >= ? AND t.day <= ? AND ${ELIGIBLE} AND t.task_type IN (${types.map(() => '?').join(',')}) GROUP BY t.day`,
-  ).bind(dayOf(yesterday - 13 * DAY), dayOf(yesterday), ...types).all<{ day: string; traces: number; agents: number }>();
+     WHERE t.day >= ? AND t.day <= ? AND ${ELIGIBLE} AND t.task_id = ? GROUP BY t.day`,
+  ).bind(dayOf(yesterday - 13 * DAY), dayOf(yesterday), taskId).all<{ day: string; traces: number; agents: number }>();
   const byDay = new Map(results.map(r => [r.day, r]));
   const days: Spark['days'] = [];
   for (let i = 13; i >= 0; i--) {
@@ -90,19 +83,19 @@ function wow(days: Spark['days']): number | null {
   return prev > 0 ? Math.round((sum(days.slice(7)) / prev) * 100) / 100 : null;
 }
 
-// The top mover's group if its days are publishable, then the biggest groups, then all tasks (weeklyTrends().daily).
+// The top mover if its days are publishable, then the biggest tasks, then all tasks (weeklyTrends().daily).
 async function computeSpark(env: Bindings, now: number): Promise<Spark> {
   const trends = await weeklyTrends(env, { now }).catch(() => null);
-  const candidates = [...(trends?.movers ?? []).slice(0, 1), ...(trends?.groups ?? []).slice(0, 3)];
+  const candidates = [...(trends?.movers ?? []).slice(0, 1), ...(trends?.tasks ?? []).slice(0, 3)];
   const seen = new Set<string>();
-  for (const g of candidates) {
-    if (seen.has(g.group)) continue;
-    seen.add(g.group);
-    const days = await groupDays(env, g.group, now);
-    if (enoughDays(days)) return { group: g.group.toLowerCase(), days, multiplier: g.multiplier ?? wow(days), published: true };
+  for (const t of candidates) {
+    if (seen.has(t.task_id)) continue;
+    seen.add(t.task_id);
+    const days = await taskDays(env, t.task_id, now);
+    if (enoughDays(days)) return { label: t.label, days, multiplier: t.multiplier ?? wow(days), published: true };
   }
   const days: Spark['days'] = (trends?.daily ?? []).slice(-14).map(d => ({ day: d.day, traces: d.published ? d.traces : null }));
-  return { group: 'all', days, multiplier: wow(days), published: days.length === 14 && enoughDays(days) };
+  return { label: 'all', days, multiplier: wow(days), published: days.length === 14 && enoughDays(days) };
 }
 
 export const spark = (env: Bindings, now = Date.now()) => cached(env, 'home:spark', MIN, () => computeSpark(env, now));
@@ -120,9 +113,9 @@ export interface RecipePreview {
 async function computeRecipePreview(env: Bindings): Promise<RecipePreview | null> {
   const r = await env.DB.prepare(
     `SELECT r.site, r.slug, r.title, r.version, r.agents_succeeded, r.steps_json, r.dead_ends_json FROM recipes r
-     LEFT JOIN site_policies p ON p.site = r.site
-     WHERE r.status = 'trusted' AND COALESCE(p.policy, '') != 'blocks' ORDER BY r.agents_succeeded DESC, r.updated_at DESC LIMIT 1`,
-  ).first<{ site: string; slug: string; title: string; version: number; agents_succeeded: number; steps_json: string; dead_ends_json: string }>();
+     JOIN tasks k ON k.id = r.task_id LEFT JOIN site_policies p ON p.site = r.site
+     WHERE r.status = 'trusted' AND k.crowd >= ? AND COALESCE(p.policy, '') != 'blocks' ORDER BY r.agents_succeeded DESC, r.updated_at DESC LIMIT 1`,
+  ).bind(RULES.TASK_PUBLIC_MIN_CROWD).first<{ site: string; slug: string; title: string; version: number; agents_succeeded: number; steps_json: string; dead_ends_json: string }>();
   if (!r) return null;
   const steps = publicSteps(r.steps_json);
   const deadEnds = publicDeadEnds(r.dead_ends_json).sort((a, b) => b.agents - a.agents);

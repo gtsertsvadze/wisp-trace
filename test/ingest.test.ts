@@ -1,30 +1,43 @@
 import { describe, expect, it } from 'vitest';
-import type { Bindings } from '../src/env';
-import { classifyTask } from '../src/processing/classify';
+import { genericDone, nameFromDescription, nameFromTag, nearlySame, similarity } from '../src/lib/tasks';
 import { buildTicks, normalizeOutcome, stepSig } from '../src/processing/ingest';
 import { generateAgentName, isReservedName, normalizeAgentName, normalizeApp, normalizeModel, registrableDomain } from '../src/lib/normalize';
 
-const env = { ENVIRONMENT: 'development' } as unknown as Bindings; // no ANTHROPIC_API_KEY: heuristic only
-
-describe('classifyTask', () => {
-  const cases: [string, string][] = [
-    ['Cancel my gym membership at Fitlane', 'membership_cancellation'],
-    ['Book a table for 4 at an Italian restaurant on Friday at 7pm', 'restaurant_booking'],
-    ['Buy a birthday gift for my sister, under £40', 'gift_shopping'],
-    ['Find the cheapest flight to Lisbon in December', 'flight_search'],
-    ['Return the shoes from my last order and print the return label', 'return_item'],
-    ['Order groceries for the week from Tesco', 'grocery_order'],
-    ['Pay the parking fine (PCN) I got last week', 'parking_fine'],
-    ['Cancel my Netflix subscription', 'subscription_cancellation'],
-    ['Buy a USB-C cable', 'product_purchase'],
-    ['Water the plants', 'other'],
+describe('task names', () => {
+  // Different wordings of the same task must land on the same key; that is what makes recipes and trends add up.
+  const same: [string, string | null, 'tag' | 'desc'][] = [
+    ['Cancel Netflix subscription', 'netflix.com', 'tag'],
+    ['Cancel my Netflix plan', 'netflix.com', 'tag'],
+    ['cancelled netflix membership', null, 'tag'],
+    ['Unsubscribe from Netflix', 'netflix.com', 'tag'],
+    ['Please cancel my Netflix subscription before it renews on [DATE]', 'netflix.com', 'desc'],
   ];
-  for (const [desc, want] of cases) {
-    it(desc, async () => expect((await classifyTask(env, { description: desc })).task_type).toBe(want));
-  }
-  it('uses a valid type_hint', async () => {
-    expect(await classifyTask(env, { description: 'whatever', type_hint: 'hotel_booking' })).toEqual({ task_type: 'hotel_booking', classifier: 'hint' });
-    expect((await classifyTask(env, { description: 'Water the plants', type_hint: 'nope' })).classifier).toBe('heuristic');
+  const name = (t: string, site: string | null, k: 'tag' | 'desc') => (k === 'tag' ? nameFromTag(t, site) : nameFromDescription(t, site));
+  it('merges wordings of the same task', () => {
+    for (const [t, site, k] of same) expect(name(t, site, k)?.key, t).toBe('cancel|netflix subscription');
+  });
+  it('labels and past tense', () => {
+    const n = nameFromTag('Cancel my Netflix subscription', 'netflix.com')!;
+    expect(n.label).toBe('Cancel Netflix subscription');
+    expect(n.done).toBe('Cancelled Netflix subscription');
+    expect(genericDone(n.verb)).toBe('Cancelled something');
+  });
+  it('adds the site brand when the name names no service', () => {
+    expect(nameFromTag('Cancel membership', 'fitlane.com')!.label).toBe('Cancel membership on Fitlane');
+    expect(nameFromTag('Book a table at Dishoom', 'opentable.com')!.key).toBe('book|dishoom table');
+  });
+  it('drops personal details: numbers, dates, mask labels, pronouns', () => {
+    const n = nameFromDescription('Book a table for 4 at 7:30pm on Friday for [NAME] and my wife', 'tablehop.com')!;
+    expect(n.label).toBe('Book a table on Tablehop');
+    expect(nameFromTag('Buy a PS5 Slim for £449 delivered by 28/11', 'argos.co.uk')!.label).toBe('Buy a PS5 Slim');
+    expect(nameFromTag('Email [NAME] at [EMAIL] about order 88412', null)?.label ?? '').not.toMatch(/NAME|EMAIL|88412/);
+  });
+  it('flags sensitive tasks and merges near-identical names', () => {
+    expect(nameFromTag('Book a dentist appointment', null)!.sensitive).toBe(true);
+    const a = nameFromTag('Cancel Fitlane membership', 'fitlane.com')!;
+    const b = nameFromDescription('Cancel my gym membership at fitlane.com', 'fitlane.com')!;
+    expect(nearlySame(a, b)).toBe(true);
+    expect(similarity(a, nameFromTag('Book a table', 'fitlane.com')!)).toBe(0);
   });
 });
 

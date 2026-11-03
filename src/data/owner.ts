@@ -2,11 +2,12 @@
 // Everything here is gated by an owner token upstream (src/lib/auth.ts agentByOwnerToken). Nothing from this
 // module may be rendered on a public page.
 import type { Bindings } from '../env';
-import type { AgentRow, Outcome, TraceStepRow } from '../types';
+import type { AgentRow, Outcome, TaskSource } from '../types';
 import { randomString, sha256Hex } from '../lib/ids';
 import { deleteRaw, getRaw } from '../lib/rawstore';
 import { minsFromSeconds } from '../lib/format';
-import { taskType } from '../lib/taxonomy';
+import { RULES } from '../lib/rules';
+import { recountTasks } from '../processing/tasks';
 import { DAY, dayOf, dayStart, isoWeek } from '../lib/time';
 
 export const OWNER_PAGE_SIZE = 40;
@@ -30,9 +31,11 @@ export interface OwnerTraceItem {
   occurred_at: number;
   started_at: number | null;
   ended_at: number | null;
-  task_type: string;
-  task: string;           // taxonomy label
-  kind: string;
+  task_id: string;
+  task: string;           // the specific task name, e.g. 'Cancel Netflix subscription' (the owner always sees it)
+  task_public: boolean;   // shown by name on public pages yet
+  task_crowd: number;     // different people's agents behind it
+  task_source: TaskSource; // 'agent' (its own tag) | 'llm' | 'heuristic' (from the description)
   task_text: string | null;
   site: string | null;
   sites: string[];
@@ -51,27 +54,26 @@ export interface OwnerTraceItem {
   has_raw: boolean;
   mask_client: number;
   mask_server: number;
-  classifier: string;
 }
 
 export interface OwnerTraceDetail {
   trace: OwnerTraceItem;
-  steps: TraceStepRow[];
-  raw: unknown | null;     // the masked full trace JSON from R2, or null when the object is missing
+  raw: unknown | null;     // the masked full trace JSON (rawstore), or null when it is missing
   raw_missing: boolean;    // a raw_key exists but the object is gone (or no raw_key at all)
 }
 
 interface TraceDbRow {
   id: string; received_at: number; occurred_at: number; started_at: number | null; ended_at: number | null;
-  task_type: string; task_kind: string; task_text: string | null; site: string | null; sites_json: string | null;
+  task_id: string; task_source: TaskSource; task_label: string; task_crowd: number; task_text: string | null; site: string | null; sites_json: string | null;
   outcome: Outcome; fail_reason: string | null; blocked_by_site: number; steps_count: number; ticks: string;
   duration_s: number | null; cost_usd: number | null; model: string; app: string; recipe_id: string | null;
-  raw_key: string | null; raw_bytes: number | null; mask_client: number; mask_server: number; classifier: string;
+  raw_key: string | null; raw_bytes: number | null; mask_client: number; mask_server: number;
 }
 
-const TRACE_COLS = `id, received_at, occurred_at, started_at, ended_at, task_type, task_kind, task_text, site, sites_json, outcome,
-  fail_reason, blocked_by_site, steps_count, ticks, duration_s, cost_usd, model, app, recipe_id, raw_key, raw_bytes,
-  mask_client, mask_server, classifier`;
+const TRACE_COLS = `t.id, t.received_at, t.occurred_at, t.started_at, t.ended_at, t.task_id, t.task_source, k.label AS task_label,
+  k.crowd AS task_crowd, t.task_text, t.site, t.sites_json, t.outcome, t.fail_reason, t.blocked_by_site, t.steps_count, t.ticks,
+  t.duration_s, t.cost_usd, t.model, t.app, t.recipe_id, t.raw_key, t.raw_bytes, t.mask_client, t.mask_server`;
+const FROM = 'FROM traces t JOIN tasks k ON k.id = t.task_id';
 
 function parseSites(json: string | null): string[] {
   if (!json) return [];
@@ -90,9 +92,11 @@ function toItem(r: TraceDbRow): OwnerTraceItem {
     occurred_at: r.occurred_at,
     started_at: r.started_at,
     ended_at: r.ended_at,
-    task_type: r.task_type,
-    task: taskType(r.task_type).label,
-    kind: r.task_kind,
+    task_id: r.task_id,
+    task: r.task_label,
+    task_public: r.task_crowd >= RULES.TASK_PUBLIC_MIN_CROWD,
+    task_crowd: r.task_crowd,
+    task_source: r.task_source,
     task_text: r.task_text,
     site: r.site,
     sites: parseSites(r.sites_json),
@@ -111,7 +115,6 @@ function toItem(r: TraceDbRow): OwnerTraceItem {
     has_raw: !!r.raw_key,
     mask_client: r.mask_client,
     mask_server: r.mask_server,
-    classifier: r.classifier,
   };
 }
 
@@ -179,10 +182,10 @@ export async function listOwnerTraces(
   const cur = parseCursor(opts.cursor);
   const stmt = cur
     ? env.DB.prepare(
-      `SELECT ${TRACE_COLS} FROM traces WHERE agent_id = ? AND (received_at < ? OR (received_at = ? AND id < ?))
-       ORDER BY received_at DESC, id DESC LIMIT ?`,
+      `SELECT ${TRACE_COLS} ${FROM} WHERE t.agent_id = ? AND (t.received_at < ? OR (t.received_at = ? AND t.id < ?))
+       ORDER BY t.received_at DESC, t.id DESC LIMIT ?`,
     ).bind(agentId, cur.at, cur.at, cur.id, limit + 1)
-    : env.DB.prepare(`SELECT ${TRACE_COLS} FROM traces WHERE agent_id = ? ORDER BY received_at DESC, id DESC LIMIT ?`)
+    : env.DB.prepare(`SELECT ${TRACE_COLS} ${FROM} WHERE t.agent_id = ? ORDER BY t.received_at DESC, t.id DESC LIMIT ?`)
       .bind(agentId, limit + 1);
   const { results } = await stmt.all<TraceDbRow>();
   const page = results.slice(0, limit);
@@ -200,9 +203,8 @@ export const isTraceId = (s: unknown): s is string => typeof s === 'string' && /
 
 export async function getOwnerTrace(env: Bindings, agentId: string, traceId: string): Promise<OwnerTraceDetail | null> {
   if (!isTraceId(traceId)) return null;
-  const row = await env.DB.prepare(`SELECT ${TRACE_COLS} FROM traces WHERE id = ? AND agent_id = ?`).bind(traceId, agentId).first<TraceDbRow>();
+  const row = await env.DB.prepare(`SELECT ${TRACE_COLS} ${FROM} WHERE t.id = ? AND t.agent_id = ?`).bind(traceId, agentId).first<TraceDbRow>();
   if (!row) return null;
-  const { results: steps } = await env.DB.prepare('SELECT * FROM trace_steps WHERE trace_id = ? ORDER BY idx').bind(traceId).all<TraceStepRow>();
   let raw: unknown | null = null;
   if (row.raw_key) {
     try {
@@ -212,12 +214,13 @@ export async function getOwnerTrace(env: Bindings, agentId: string, traceId: str
       raw = null; // unreadable object: shown as missing, never as an error page
     }
   }
-  return { trace: toItem(row), steps, raw, raw_missing: raw == null };
+  return { trace: toItem(row), raw, raw_missing: raw == null };
 }
 
 // ---------------------------------------------------------------------------------------------
-// Deletes. Each removes the raw object(s) (R2, or trace_raw without R2), trace_steps, the traces row(s), decrements counters.traces_total
-// (never below 0) and marks the affected recipe groups dirty so the next cron rebuild drops the evidence.
+// Deletes. Each removes the raw object(s) (R2, or trace_raw without R2), the traces row(s) and the upvotes they cast, decrements
+// counters.traces_total (never below 0), recounts the affected tasks (so a name drops back to private if its crowd shrinks)
+// and marks the affected recipe groups dirty so the next cron rebuild drops the evidence.
 // ---------------------------------------------------------------------------------------------
 async function r2Delete(env: Bindings, keys: string[]): Promise<void> {
   try {
@@ -238,34 +241,36 @@ const counterDecrement = (env: Bindings, n: number) =>
 /** Delete one trace. Returns false when it isn't this agent's. */
 export async function deleteOwnerTrace(env: Bindings, agentId: string, traceId: string): Promise<boolean> {
   if (!isTraceId(traceId)) return false;
-  const row = await env.DB.prepare('SELECT id, raw_key, recipe_group FROM traces WHERE id = ? AND agent_id = ?')
-    .bind(traceId, agentId).first<{ id: string; raw_key: string | null; recipe_group: string | null }>();
+  const row = await env.DB.prepare('SELECT id, raw_key, recipe_group, task_id FROM traces WHERE id = ? AND agent_id = ?')
+    .bind(traceId, agentId).first<{ id: string; raw_key: string | null; recipe_group: string | null; task_id: string }>();
   if (!row) return false;
   if (row.raw_key) await r2Delete(env, [row.raw_key]);
   const stmts = [
-    env.DB.prepare('DELETE FROM trace_steps WHERE trace_id = ?').bind(traceId),
+    env.DB.prepare('DELETE FROM upvotes WHERE trace_id = ?').bind(traceId),
     env.DB.prepare('DELETE FROM traces WHERE id = ? AND agent_id = ?').bind(traceId, agentId),
     counterDecrement(env, 1),
   ];
   if (row.recipe_group) stmts.push(...groupStatements(env, new Map([[row.recipe_group, 1]])));
   await env.DB.batch(stmts);
+  await recountTasks(env, [row.task_id]);
   return true;
 }
 
 /** Delete every trace of the agent. Returns the number removed. */
 export async function deleteAllOwnerTraces(env: Bindings, agentId: string): Promise<number> {
-  const { results } = await env.DB.prepare('SELECT id, raw_key, recipe_group FROM traces WHERE agent_id = ?')
-    .bind(agentId).all<{ id: string; raw_key: string | null; recipe_group: string | null }>();
+  const { results } = await env.DB.prepare('SELECT id, raw_key, recipe_group, task_id FROM traces WHERE agent_id = ?')
+    .bind(agentId).all<{ id: string; raw_key: string | null; recipe_group: string | null; task_id: string }>();
   if (!results.length) return 0;
   await r2Delete(env, results.map(r => r.raw_key).filter((k): k is string => !!k));
   const groups = new Map<string, number>();
   for (const r of results) if (r.recipe_group) groups.set(r.recipe_group, (groups.get(r.recipe_group) ?? 0) + 1);
   await env.DB.batch([
-    env.DB.prepare('DELETE FROM trace_steps WHERE trace_id IN (SELECT id FROM traces WHERE agent_id = ?)').bind(agentId),
+    env.DB.prepare('DELETE FROM upvotes WHERE voter_id = ?').bind(agentId),
     env.DB.prepare('DELETE FROM traces WHERE agent_id = ?').bind(agentId),
     counterDecrement(env, results.length),
     ...groupStatements(env, groups),
   ]);
+  await recountTasks(env, results.map(r => r.task_id));
   return results.length;
 }
 
@@ -279,6 +284,7 @@ export async function deleteOwnerAgent(env: Bindings, agent: AgentRow, now = Dat
   const scrambleOwner = await sha256Hex(`deleted-owner:${agent.id}:${randomString(32)}`);
   await env.DB.batch([
     env.DB.prepare('DELETE FROM recipe_requests WHERE agent_id = ?').bind(agent.id),
+    env.DB.prepare('DELETE FROM recipe_contributors WHERE agent_id = ?').bind(agent.id),
     env.DB.prepare(
       `UPDATE agents SET deleted_at = ?, api_key_hash = ?, owner_token_hash = ?, owner_post_url = NULL WHERE id = ?`,
     ).bind(now, scrambleKey, scrambleOwner, agent.id),

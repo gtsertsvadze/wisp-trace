@@ -1,9 +1,11 @@
-// Agent profile data (UI-2). Public shape only: taxonomy labels, ticks, counts and minutes. No sites, no task
-// text, no exact times (recent tasks are ordered but undated; the feed uses day granularity).
+// Agent profile data (UI-2). Public shape only: task names, ticks, counts and minutes. A profile is tied to its
+// owner's handle, so a task's specific name shows only when it is public AND not sensitive (else "Cancelled
+// something"). No task text, no URLs, no exact times (recent tasks are ordered but undated).
 import type { Bindings } from '../env';
 import type { AwardId, Outcome } from '../types';
 import { opaqueKey } from '../lib/ids';
-import { taskType } from '../lib/taxonomy';
+import { RULES } from '../lib/rules';
+import { TASK_COLS, profileDone, taskOf, type TaskCols } from '../processing/tasks';
 import { DAY, MIN, WEEK, dayOf, dayStart, isoWeek, weekStart } from '../lib/time';
 import { type AwardDetail, awardsFor } from './boards';
 
@@ -12,8 +14,7 @@ export const GRID_WEEKS = 26;
 
 export interface RecentTask {
   key: string;        // opaque, never the trace id
-  task: string;       // taxonomy label
-  kind: string;
+  task: string;       // 'Cancelled Netflix subscription', or 'Cancelled something' while private/sensitive
   outcome: Outcome;
   ticks: string;
   steps: number;
@@ -59,12 +60,15 @@ export interface AgentProfile {
   recent: RecentTask[];
   awards: AgentAward[];
   best_at: BestAt[];
+  upvotes: number;                // all-time upvotes earned (other agents followed its recipes and succeeded)
+  recipes: number;                // live recipes its traces helped build
 }
 
 const AWARD_TITLE: Record<AwardId, string> = {
-  hardest_working: 'Hardest-working agent',
+  most_shared: 'Most traces shared',
+  trendsetter: 'Trend-setter of the week',
+  most_upvoted: 'Most upvoted',
   most_reliable_model: 'Most reliable model',
-  comeback: 'Comeback of the week',
   top_app: 'Highest success · agent app',
   longest_streak: 'Longest streak',
 };
@@ -107,6 +111,8 @@ export function activityLevels(byDay: Map<string, number>, now: number): Activit
   });
 }
 
+interface TraceTaskRow { id: string; outcome: Outcome; ticks: string; steps_count: number; duration_s: number | null; day: string }
+
 async function findAgent(env: Bindings, name: string): Promise<AgentLite | null> {
   if (!/^[a-z0-9][a-z0-9-]{2,31}$/.test(name)) return null;
   const a = await env.DB.prepare(
@@ -121,7 +127,7 @@ export async function agentProfile(env: Bindings, name: string, now = Date.now()
   const a = await findAgent(env, name);
   if (!a) return null;
 
-  const [totals, days, recent, types, awardRows] = await env.DB.batch([
+  const [totals, days, recent, types, awardRows, votes, built] = await env.DB.batch([
     env.DB.prepare(
       `SELECT COUNT(*) AS n, COALESCE(SUM(outcome = 'done'), 0) AS done,
               COALESCE(SUM(MAX(1, (COALESCE(duration_s, 0) + 59) / 60)), 0) AS mins,
@@ -130,15 +136,23 @@ export async function agentProfile(env: Bindings, name: string, now = Date.now()
     ).bind(a.id),
     env.DB.prepare('SELECT day, COUNT(*) AS c FROM traces WHERE agent_id = ? GROUP BY day').bind(a.id),
     env.DB.prepare(
-      `SELECT id, task_type, outcome, ticks, steps_count, duration_s, day FROM traces
-       WHERE agent_id = ? AND feed_visible_at <= ? ORDER BY occurred_at DESC LIMIT 12`,
+      `SELECT t.id, t.outcome, t.ticks, t.steps_count, t.duration_s, t.day, ${TASK_COLS} FROM traces t JOIN tasks k ON k.id = t.task_id
+       WHERE t.agent_id = ? AND t.feed_visible_at <= ? ORDER BY t.occurred_at DESC LIMIT 12`,
     ).bind(a.id, now),
     env.DB.prepare(
-      "SELECT task_type, COUNT(*) AS n, COALESCE(SUM(outcome = 'done'), 0) AS done FROM traces WHERE agent_id = ? GROUP BY task_type",
-    ).bind(a.id),
+      `SELECT k.label, COUNT(*) AS n, COALESCE(SUM(t.outcome = 'done'), 0) AS done FROM traces t JOIN tasks k ON k.id = t.task_id
+       WHERE t.agent_id = ? AND k.crowd >= ? AND k.sensitive = 0 GROUP BY t.task_id HAVING n >= 3 ORDER BY n DESC LIMIT 20`,
+    ).bind(a.id, RULES.TASK_PUBLIC_MIN_CROWD),
     env.DB.prepare(
       "SELECT week, award, value FROM awards WHERE subject_type = 'agent' AND (agent_id = ? OR (agent_id IS NULL AND subject = ?)) ORDER BY week DESC",
     ).bind(a.id, a.name),
+    env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM upvotes u JOIN recipe_contributors c ON c.recipe_id = u.recipe_id AND c.agent_id = ? WHERE u.voter_id != ?`,
+    ).bind(a.id, a.id),
+    env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM recipe_contributors c JOIN recipes r ON r.id = c.recipe_id JOIN tasks k ON k.id = r.task_id
+       WHERE c.agent_id = ? AND r.status IN ('trusted', 'forming') AND k.crowd >= ?`,
+    ).bind(a.id, RULES.TASK_PUBLIC_MIN_CROWD),
   ]);
 
   const tot = (totals.results[0] ?? { n: 0, done: 0, mins: 0, cost: 0, costed: 0 }) as { n: number; done: number; mins: number; cost: number; costed: number };
@@ -148,19 +162,17 @@ export async function agentProfile(env: Bindings, name: string, now = Date.now()
   let personal_best: AgentProfile['personal_best'] = null;
   for (const [day, count] of byDay) if (!personal_best || count > personal_best.count) personal_best = { day, count };
 
-  const recentRows = recent.results as { id: string; task_type: string; outcome: Outcome; ticks: string; steps_count: number; duration_s: number | null; day: string }[];
+  const recentRows = recent.results as (TraceTaskRow & TaskCols)[];
   const recentTasks: RecentTask[] = await Promise.all(recentRows.map(async r => {
-    const tt = taskType(r.task_type);
     return {
       key: await opaqueKey(r.id, env.HASH_SALT ?? ''),
-      task: tt.label, kind: tt.kind, outcome: r.outcome, ticks: r.ticks ?? '',
+      task: profileDone(taskOf(r)), outcome: r.outcome, ticks: r.ticks ?? '',
       steps: r.steps_count, mins: Math.max(1, Math.ceil((r.duration_s ?? 0) / 60)), day: r.day,
     };
   }));
 
-  const best_at: BestAt[] = (types.results as { task_type: string; n: number; done: number }[])
-    .filter(r => r.n >= 3)
-    .map(r => ({ label: taskType(r.task_type).trend, tasks: r.n, success: Math.round((r.done / r.n) * 100) }))
+  const best_at: BestAt[] = (types.results as { label: string; n: number; done: number }[])
+    .map(r => ({ label: r.label, tasks: r.n, success: Math.round((r.done / r.n) * 100) }))
     .sort((x, y) => y.success - x.success || y.tasks - x.tasks)
     .slice(0, 4);
 
@@ -184,6 +196,8 @@ export async function agentProfile(env: Bindings, name: string, now = Date.now()
     streak: st.current, best_streak: st.best,
     activity: activityLevels(byDay, now), personal_best,
     recent: recentTasks, awards, best_at,
+    upvotes: (votes.results[0] as { n: number } | undefined)?.n ?? 0,
+    recipes: (built.results[0] as { n: number } | undefined)?.n ?? 0,
   };
 }
 
@@ -192,14 +206,13 @@ export async function agentFeedItems(env: Bindings, name: string, now = Date.now
   const a = await findAgent(env, name);
   if (!a) return null;
   const { results } = await env.DB.prepare(
-    `SELECT id, task_type, outcome, ticks, steps_count, duration_s, day FROM traces
-     WHERE agent_id = ? AND feed_visible_at <= ? ORDER BY occurred_at DESC LIMIT 30`,
-  ).bind(a.id, now).all<{ id: string; task_type: string; outcome: Outcome; ticks: string; steps_count: number; duration_s: number | null; day: string }>();
+    `SELECT t.id, t.outcome, t.ticks, t.steps_count, t.duration_s, t.day, ${TASK_COLS} FROM traces t JOIN tasks k ON k.id = t.task_id
+     WHERE t.agent_id = ? AND t.feed_visible_at <= ? ORDER BY t.occurred_at DESC LIMIT 30`,
+  ).bind(a.id, now).all<TraceTaskRow & TaskCols>();
   const items = await Promise.all(results.map(async r => {
-    const tt = taskType(r.task_type);
     return {
       key: await opaqueKey(r.id, env.HASH_SALT ?? ''),
-      task: tt.label, kind: tt.kind, outcome: r.outcome, ticks: r.ticks ?? '',
+      task: profileDone(taskOf(r)), outcome: r.outcome, ticks: r.ticks ?? '',
       steps: r.steps_count, mins: Math.max(1, Math.ceil((r.duration_s ?? 0) / 60)), day: r.day,
     };
   }));

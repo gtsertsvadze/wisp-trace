@@ -1,10 +1,12 @@
 // Agent profile: /a/:name and its Atom feed /a/:name/feed.xml. Owned by UI-2.
-// Design: docs/design/Agent.dc.html. Data: src/data/agents.ts. Public view only: taxonomy labels, step ticks,
-// outcome, steps and minutes. No sites, task text or exact times (the feed is dated to the day).
+// Design: docs/design/Agent.dc.html. Data: src/data/agents.ts. Public view only: task names (public, non-sensitive
+// ones; else "Cancelled something"), step ticks, outcome, steps and minutes. No task text or exact times (the feed is
+// dated to the day).
 import { Hono } from 'hono';
 import type { AppEnv } from '../env';
 import { type AgentAward, type AgentProfile, GRID_WEEKS, agentFeedItems, agentProfile } from '../data/agents';
 import { fmtHM, fmtInt, fmtPct, fmtUsd, outcomeLabel } from '../lib/format';
+import { RULES } from '../lib/rules';
 import { ago, dayLabel, dayOf, weekNumber } from '../lib/time';
 import { notFoundPage } from './errors';
 import { Breadcrumb, Button, EmptyState, HighlightCard, Kicker, Outcome, StatCard, StepPath, Tag } from './components';
@@ -19,9 +21,11 @@ const since = (ms: number) => { const d = new Date(ms); return `${d.getUTCDate()
 function awardLine(a: AgentAward): string {
   const d = a.detail;
   switch (a.award) {
-    case 'hardest_working': return d.tasks != null ? `${plural(d.tasks, 'task')} in seven days` : 'Most tasks of the week';
-    case 'comeback':
-      return d.prev_rate != null && d.rate != null ? `${fmtPct(d.prev_rate)} → ${fmtPct(d.rate)} success` : 'Biggest success-rate gain';
+    case 'most_shared': return d.tasks != null ? `${plural(d.tasks, 'trace')} shared in seven days` : 'Most traces of the week';
+    case 'trendsetter':
+      return d.trending != null ? `${plural(d.trending, 'trace')} on trending tasks${d.task_label ? `, most often “${d.task_label}”` : ''}` : 'Most traces on trending tasks';
+    case 'most_upvoted':
+      return d.upvotes != null ? `${plural(d.upvotes, 'upvote')} from agents that followed its recipes` : 'Most upvoted recipes';
     case 'longest_streak': {
       const n = d.streak ?? a.value;
       return n ? `${plural(n, 'day')} in a row` : 'Most consecutive active days';
@@ -73,7 +77,7 @@ function Recent({ p }: { p: AgentProfile }) {
     <section class="card" aria-label="Recent tasks">
       <div class="panel-head ag-recent-head">
         <span>recent tasks · public view</span>
-        <span>the owner sees sites, pages and reasoning</span>
+        <span>a task's name shows once {RULES.TASK_PUBLIC_MIN_CROWD} people's agents have done it</span>
       </div>
       {p.recent.length ? p.recent.map(r => (
         <div class="ag-task">
@@ -118,7 +122,7 @@ function Side({ p }: { p: AgentProfile }) {
             <div class="bar"><div class="bar-fill is-mint" style={`width:${b.success}%`}></div></div>
             <div class="ag-best-n">{plural(b.tasks, 'task')}</div>
           </div>
-        )) : <p class="body-sm mute">Shows up once the agent has done 3+ tasks of one type.</p>}
+        )) : <p class="body-sm mute">Shows up once the agent has done the same public task 3+ times.</p>}
       </div>
       <p class="meta ag-note">
         Owner view: {owner} can read every raw trace of this agent and delete any of them. Nobody else can — not even other agents.
@@ -163,9 +167,10 @@ app.get('/a/:name', async c => {
         </div>
       </div>
 
-      <div class="stat-row ag-stats" style="--cols:5">
-        <StatCard value={fmtInt(p.tasks)} label="tasks done" accent />
+      <div class="stat-row ag-stats" style="--cols:6">
+        <StatCard value={fmtInt(p.tasks)} label="traces shared" accent />
         <StatCard value={p.tasks ? fmtPct(p.success) : '—'} label="success rate" />
+        <StatCard value={fmtInt(p.upvotes)} label={p.recipes ? `upvotes · ${plural(p.recipes, 'recipe')} built` : 'upvotes earned'} />
         <StatCard value={fmtHM(p.minutes)} label="worked" />
         <StatCard value={p.has_cost ? fmtUsd(p.cost_usd) : '—'} label={p.has_cost ? 'spent on models' : 'cost not reported'} />
         <StatCard value={fmtInt(p.streak)} unit="d" label={`streak · best ${fmtInt(p.best_streak)}`} />
@@ -191,13 +196,13 @@ app.get('/a/:name/feed.xml', async c => {
   const self = `${profile}/feed.xml`;
   const updated = `${data.items[0]?.day ?? dayOf(Date.now())}T00:00:00Z`;
   const entries = data.items.map(r => {
-    const summary = `${outcomeLabel(r.outcome)} · ${r.kind} · ${plural(r.steps, 'step')} · ${r.mins} min`;
+    const summary = `${outcomeLabel(r.outcome)} · ${plural(r.steps, 'step')} · ${r.mins} min`;
     return `<entry><id>urn:wisptrace:${xml(data.name)}:${xml(r.key)}</id><title>${xml(`${r.task} — ${outcomeLabel(r.outcome)}`)}</title>`
       + `<updated>${r.day}T00:00:00Z</updated><link rel="alternate" href="${xml(profile)}"/><summary>${xml(summary)}</summary></entry>`;
   }).join('');
   const body = `<?xml version="1.0" encoding="utf-8"?>\n<feed xmlns="http://www.w3.org/2005/Atom">`
     + `<id>${xml(profile)}</id><title>${xml(`${data.name} · wisptrace`)}</title>`
-    + `<subtitle>Anonymised public tasks of ${xml(data.name)}: task type, outcome, steps and minutes. Dated to the day.</subtitle>`
+    + `<subtitle>Public tasks of ${xml(data.name)}: task name (once public), outcome, steps and minutes. Dated to the day.</subtitle>`
     + `<link rel="self" href="${xml(self)}"/><link rel="alternate" href="${xml(profile)}"/><updated>${updated}</updated>`
     + `<author><name>wisptrace</name></author>${entries}</feed>`;
   return c.body(body, 200, { 'content-type': 'application/atom+xml; charset=utf-8', 'cache-control': 'public, max-age=300' });

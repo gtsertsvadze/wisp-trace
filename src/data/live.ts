@@ -1,13 +1,14 @@
-// Live feed + public stats (UI-1). Everything here is PublicFeedItem/PublicStats-level: no sites, task text,
-// trace ids or exact times ever leave this module.
+// Live feed + public stats (UI-1). Everything here is PublicFeedItem/PublicStats-level: no task text, URLs,
+// trace ids or exact times ever leave this module. A task's specific name appears only once it is public
+// (RULES.TASK_PUBLIC_MIN_CROWD different humans did it); before that the row says "Cancelled something".
 import type { Bindings } from '../env';
 import type { Outcome, PublicFeedItem, PublicStats } from '../types';
 import { opaqueKey } from '../lib/ids';
 import { minsFromSeconds } from '../lib/format';
 import { RULES } from '../lib/rules';
-import { taskType } from '../lib/taxonomy';
 import { isoWeek, lastCompleteWeek, MIN } from '../lib/time';
 import { cached } from '../processing/snapshots';
+import { TASK_COLS, isPublicTask, publicDone, taskOf, type TaskCols } from '../processing/tasks';
 import { weeklyTrends } from '../processing/trends';
 
 /** Only claimed (incl. seed), non-deleted agents feed public pages. Requires `agents a`. */
@@ -29,9 +30,8 @@ export function decodeCursor(s: string | undefined | null): { at: number; seen: 
   return Number.isFinite(at) && Number.isFinite(seen) ? { at, seen } : null;
 }
 
-interface FeedRow {
+interface FeedRow extends TaskCols {
   id: string;
-  task_type: string;
   outcome: Outcome;
   ticks: string;
   steps_count: number;
@@ -44,12 +44,20 @@ interface FeedRow {
 
 export interface FeedPage { items: PublicFeedItem[]; cursor: string | null }
 
+/** The line under a feed row's task name. */
+export function taskNote(task: { crowd: number }): string {
+  return isPublicTask(task)
+    ? `${task.crowd} people's agents did this`
+    : `name stays private until ${RULES.TASK_PUBLIC_MIN_CROWD} people's agents do it`;
+}
+
 function toItem(r: FeedRow, key: string): PublicFeedItem {
-  const tt = taskType(r.task_type);
+  const task = taskOf(r);
   return {
     key,
-    task: tt.label,
-    kind: tt.kind,
+    task: publicDone(task),
+    note: taskNote(task),
+    public: isPublicTask(task),
     outcome: r.outcome,
     ticks: r.ticks ?? '',
     steps: r.steps_count,
@@ -72,8 +80,8 @@ export async function feedItems(
   const limit = Math.max(1, Math.min(100, Math.trunc(opts.limit ?? 40)));
   const filter = opts.filter ?? 'all';
   const cur = decodeCursor(opts.after);
-  const cols = 't.id, t.task_type, t.outcome, t.ticks, t.steps_count, t.duration_s, t.model, t.app, t.is_seed, t.feed_visible_at';
-  const base = `FROM traces t JOIN agents a ON a.id = t.agent_id WHERE t.feed_visible_at <= ? AND ${ELIGIBLE} ${FILTER_SQL[filter]}`;
+  const cols = `t.id, t.outcome, t.ticks, t.steps_count, t.duration_s, t.model, t.app, t.is_seed, t.feed_visible_at, ${TASK_COLS}`;
+  const base = `FROM traces t JOIN agents a ON a.id = t.agent_id JOIN tasks k ON k.id = t.task_id WHERE t.feed_visible_at <= ? AND ${ELIGIBLE} ${FILTER_SQL[filter]}`;
   let rows: FeedRow[];
   if (cur) {
     const { results } = await env.DB.prepare(
@@ -103,7 +111,7 @@ export async function feedItems(
 
 async function computeStats(env: Bindings, now: number): Promise<PublicStats> {
   const week = isoWeek(now);
-  const [counter, agents, recent, wk, recipes, trends] = await Promise.all([
+  const [counter, agents, recent, wk, recipes, tasks, trends] = await Promise.all([
     env.DB.prepare("SELECT value FROM counters WHERE key = 'traces_total'").first<{ value: number }>(),
     env.DB.prepare("SELECT COUNT(*) AS n FROM agents a WHERE a.deleted_at IS NULL AND a.claim_status = 'claimed'").first<{ n: number }>(),
     env.DB.prepare(`SELECT COUNT(*) AS n FROM traces t JOIN agents a ON a.id = t.agent_id WHERE t.received_at > ? AND ${ELIGIBLE}`)
@@ -113,8 +121,10 @@ async function computeStats(env: Bindings, now: number): Promise<PublicStats> {
        WHERE t.week = ? AND ${ELIGIBLE}`,
     ).bind(week).first<{ n: number; done: number }>(),
     env.DB.prepare(
-      `SELECT COALESCE(SUM(status = 'trusted'), 0) AS trusted, COALESCE(SUM(status = 'forming'), 0) AS forming FROM recipes`,
-    ).first<{ trusted: number; forming: number }>(),
+      `SELECT COALESCE(SUM(r.status = 'trusted'), 0) AS trusted, COALESCE(SUM(r.status = 'forming'), 0) AS forming
+       FROM recipes r JOIN tasks k ON k.id = r.task_id WHERE k.crowd >= ?`,
+    ).bind(RULES.TASK_PUBLIC_MIN_CROWD).first<{ trusted: number; forming: number }>(),
+    env.DB.prepare('SELECT COUNT(*) AS n FROM tasks WHERE crowd >= ?').bind(RULES.TASK_PUBLIC_MIN_CROWD).first<{ n: number }>(),
     weeklyTrends(env, { now }).catch(() => null),
   ]);
   const weekTasks = wk?.n ?? 0;
@@ -128,7 +138,8 @@ async function computeStats(env: Bindings, now: number): Promise<PublicStats> {
     week_success_rate: weekTasks ? Math.round(((wk?.done ?? 0) / weekTasks) * 100) : 0,
     recipes_trusted: recipes?.trusted ?? 0,
     recipes_forming: recipes?.forming ?? 0,
-    top_mover: mover && mover.multiplier != null ? { label: mover.group, multiplier: mover.multiplier } : null,
+    tasks_public: tasks?.n ?? 0,
+    top_mover: mover && mover.multiplier != null ? { label: mover.label, multiplier: mover.multiplier } : null,
   };
 }
 

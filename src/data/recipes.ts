@@ -1,10 +1,10 @@
-// Data for /recipes and /recipes/:site/:slug. Owned by UI-3.
+// Data for /recipes and /recipes/:site/:slug (slug = the specific task's slug, e.g. cancel-netflix-subscription). UI-3.
+// Only tasks whose name is public (RULES.TASK_PUBLIC_MIN_CROWD) have public recipes.
 // Everything returned here is derived, sanitized recipe data (never trace content); hidden JSON fields
 // are stripped with publicSteps()/publicDeadEnds() from src/processing/recipes.ts.
 import type { Bindings } from '../env';
-import type { DeadEnd, RecipeRow, RecipeStep, SitePolicyRow } from '../types';
+import type { DeadEnd, RecipeRow, RecipeStep, SitePolicyRow, TaskRow } from '../types';
 import { RULES } from '../lib/rules';
-import { taskType, taskTypeBySlug } from '../lib/taxonomy';
 import { getSitePolicy } from '../processing/policies';
 import { publicDeadEnds, publicSteps } from '../processing/recipes';
 import { cached } from '../processing/snapshots';
@@ -16,8 +16,9 @@ export type TrustMark = 'o' | 'f' | 'h';
 export interface RecipeCard {
   site: string;
   slug: string;
-  task_type: string;
+  task_id: string;
   title: string;
+  upvotes: number;
   status: CardStatus;
   href: string;
   agents_succeeded: number;
@@ -57,8 +58,9 @@ export interface RecipeDetail {
   id: string;
   site: string;
   slug: string;
-  task_type: string;
+  task_id: string;
   title: string;
+  upvotes: number;               // agents that followed this version and succeeded
   version: number;
   status: RecipeRow['status'];
   /** True when viewing an older version via ?v=; `current` then points at the live one. */
@@ -123,31 +125,33 @@ export function trailingFailures(trust: TrustMark[], fallback: number): number {
 const cardStatus = (s: RecipeRow['status']): CardStatus | null =>
   s === 'trusted' || s === 'forming' || s === 'outdated' || s === 'blocked' ? s : null;
 
-type CurrentRow = Pick<RecipeRow, 'site' | 'task_type' | 'slug' | 'title' | 'status' | 'agents_succeeded' | 'agents_failed' | 'median_steps' | 'median_s' | 'last_confirmed_at' | 'outdated_at' | 'trust_json'>;
+type CurrentRow = Pick<RecipeRow, 'site' | 'task_id' | 'slug' | 'title' | 'status' | 'agents_succeeded' | 'agents_failed' | 'median_steps' | 'median_s' | 'last_confirmed_at' | 'outdated_at' | 'trust_json'> & { upvotes: number };
+
+const K = RULES.TASK_PUBLIC_MIN_CROWD;
+/** The current (highest non-superseded) version per (task, site), for public tasks only. */
+const CURRENT_JOIN = `JOIN (SELECT task_id, site, MAX(version) AS v FROM recipes WHERE status != 'superseded' GROUP BY task_id, site) m
+         ON m.task_id = r.task_id AND m.site = r.site AND m.v = r.version
+       JOIN tasks k ON k.id = r.task_id AND k.crowd >= ${K}`;
 
 async function computeIndex(env: Bindings): Promise<RecipeCard[]> {
   const [rows, blockedSites] = await Promise.all([
-    // The current (highest non-superseded) version per (site, task_type).
     env.DB.prepare(
-      `SELECT r.site, r.task_type, r.slug, r.title, r.status, r.agents_succeeded, r.agents_failed, r.median_steps, r.median_s,
-              r.last_confirmed_at, r.outdated_at, r.trust_json
-       FROM recipes r
-       JOIN (SELECT site, task_type, MAX(version) AS v FROM recipes WHERE status != 'superseded' GROUP BY site, task_type) m
-         ON m.site = r.site AND m.task_type = r.task_type AND m.v = r.version
+      `SELECT r.site, r.task_id, k.slug, k.label AS title, r.status, r.agents_succeeded, r.agents_failed, r.median_steps, r.median_s,
+              r.last_confirmed_at, r.outdated_at, r.trust_json, COALESCE(u.n, 0) AS upvotes
+       FROM recipes r ${CURRENT_JOIN}
+       LEFT JOIN (SELECT recipe_id, COUNT(*) AS n FROM upvotes GROUP BY recipe_id) u ON u.recipe_id = r.id
        WHERE r.status != 'superseded'
        ORDER BY CASE r.status WHEN 'trusted' THEN 0 WHEN 'forming' THEN 1 WHEN 'outdated' THEN 2 ELSE 3 END,
-                r.agents_succeeded DESC, r.last_confirmed_at DESC`,
+                r.agents_succeeded DESC, r.last_confirmed_at DESC
+       LIMIT 2000`,
     ).all<CurrentRow>(),
+    // Blocked sites: one card each, titled with the public task agents most often attempted there.
     env.DB.prepare(
-      `SELECT p.site, g.task_type
-       FROM site_policies p
-       LEFT JOIN (
-         SELECT site, task_type FROM recipe_groups g1
-         WHERE traces = (SELECT MAX(traces) FROM recipe_groups g2 WHERE g2.site = g1.site)
-       ) g ON g.site = p.site
-       WHERE p.policy = 'blocks'
-       GROUP BY p.site ORDER BY p.site`,
-    ).all<{ site: string; task_type: string | null }>(),
+      `SELECT p.site,
+              (SELECT k.slug FROM recipe_groups g JOIN tasks k ON k.id = g.task_id WHERE g.site = p.site AND k.crowd >= ${K} ORDER BY g.traces DESC LIMIT 1) AS slug,
+              (SELECT k.label FROM recipe_groups g JOIN tasks k ON k.id = g.task_id WHERE g.site = p.site AND k.crowd >= ${K} ORDER BY g.traces DESC LIMIT 1) AS label
+       FROM site_policies p WHERE p.policy = 'blocks' ORDER BY p.site`,
+    ).all<{ site: string; slug: string | null; label: string | null }>(),
   ]);
 
   const blocked = new Set(blockedSites.results.map(b => b.site));
@@ -161,8 +165,9 @@ async function computeIndex(env: Bindings): Promise<RecipeCard[]> {
     cards.push({
       site: r.site,
       slug: r.slug,
-      task_type: r.task_type,
+      task_id: r.task_id,
       title: r.title,
+      upvotes: r.upvotes,
       status,
       href: recipeHref(r.site, r.slug),
       agents_succeeded: r.agents_succeeded,
@@ -174,11 +179,9 @@ async function computeIndex(env: Bindings): Promise<RecipeCard[]> {
     });
   }
   for (const b of blockedSites.results) {
-    // Title: the task agents most often attempted on the site (taxonomy text), else the generic one.
-    const fromRecipe = rows.results.find(r => r.site === b.site);
-    const tt = taskType(fromRecipe?.task_type ?? b.task_type);
+    const slug = b.slug ?? 'tasks';
     cards.push({
-      site: b.site, slug: tt.slug, task_type: tt.id, title: tt.recipe, status: 'blocked', href: recipeHref(b.site, tt.slug),
+      site: b.site, slug, task_id: '', title: b.label ?? `Tasks on ${b.site}`, upvotes: 0, status: 'blocked', href: recipeHref(b.site, slug),
       agents_succeeded: 0, failures: 0, median_steps: null, median_s: null, last_confirmed_at: null, outdated_at: null,
     });
   }
@@ -225,36 +228,40 @@ function versionRef(r: Pick<RecipeRow, 'site' | 'slug' | 'version' | 'status' | 
  */
 export async function getRecipe(env: Bindings, siteRaw: string, slugRaw: string, version?: number): Promise<RecipePage | null> {
   const site = normalizeSite(siteRaw);
-  const tt = taskTypeBySlug((slugRaw ?? '').trim().toLowerCase());
-  if (!site || !tt) return null;
-  const policy = await getSitePolicy(env, site);
-  if (policy?.policy === 'blocks') return { kind: 'blocked', site, slug: tt.slug, title: tt.recipe, policy };
+  const slug = (slugRaw ?? '').trim().toLowerCase();
+  if (!site || !/^[a-z0-9-]{1,80}$/.test(slug)) return null;
+  const [policy, taskRow] = await Promise.all([
+    getSitePolicy(env, site),
+    env.DB.prepare('SELECT * FROM tasks WHERE slug = ?').bind(slug).first<TaskRow>(),
+  ]);
+  const task = taskRow && taskRow.crowd >= K ? taskRow : null; // a private task's name never appears on a page
+  if (policy?.policy === 'blocks') return { kind: 'blocked', site, slug, title: task?.label ?? `Tasks on ${site}`, policy };
+  if (!task) return null;
 
   const current = await env.DB.prepare(
-    "SELECT * FROM recipes WHERE site = ? AND slug = ? AND status != 'superseded' ORDER BY version DESC LIMIT 1",
-  ).bind(site, tt.slug).first<RecipeRow>();
+    "SELECT * FROM recipes WHERE task_id = ? AND site = ? AND status != 'superseded' ORDER BY version DESC LIMIT 1",
+  ).bind(task.id, site).first<RecipeRow>();
   if (!current) return null;
-  if (current.status === 'blocked') return policy ? { kind: 'blocked', site, slug: tt.slug, title: tt.recipe, policy } : null;
+  if (current.status === 'blocked') return policy ? { kind: 'blocked', site, slug, title: task.label, policy } : null;
   if (current.status === 'forming' && current.agents_succeeded < RULES.RECIPE_MIN_AGENTS_TO_PUBLISH) return null;
 
   let row = current;
   if (version !== undefined && version !== current.version) {
-    const old = await env.DB.prepare('SELECT * FROM recipes WHERE site = ? AND slug = ? AND version = ?').bind(site, tt.slug, version).first<RecipeRow>();
+    const old = await env.DB.prepare('SELECT * FROM recipes WHERE task_id = ? AND site = ? AND version = ?').bind(task.id, site, version).first<RecipeRow>();
     if (!old) return null;
     row = old;
   }
   const isCurrent = row.id === current.id;
 
-  const [prev, rel] = await Promise.all([
-    env.DB.prepare('SELECT site, slug, version, status, outdated_at, updated_at FROM recipes WHERE site = ? AND task_type = ? AND version < ? ORDER BY version DESC LIMIT 5')
-      .bind(site, row.task_type, row.version).all<Pick<RecipeRow, 'site' | 'slug' | 'version' | 'status' | 'outdated_at' | 'updated_at'>>(),
+  const [prev, rel, votes] = await Promise.all([
+    env.DB.prepare('SELECT site, slug, version, status, outdated_at, updated_at FROM recipes WHERE task_id = ? AND site = ? AND version < ? ORDER BY version DESC LIMIT 5')
+      .bind(task.id, site, row.version).all<Pick<RecipeRow, 'site' | 'slug' | 'version' | 'status' | 'outdated_at' | 'updated_at'>>(),
     env.DB.prepare(
-      `SELECT r.title, r.slug, r.status, r.agents_succeeded FROM recipes r
-       JOIN (SELECT site, task_type, MAX(version) AS v FROM recipes WHERE status != 'superseded' GROUP BY site, task_type) m
-         ON m.site = r.site AND m.task_type = r.task_type AND m.v = r.version
-       WHERE r.site = ? AND r.task_type != ? AND r.status IN ('trusted', 'forming', 'outdated')
+      `SELECT r.title, r.slug, r.status, r.agents_succeeded FROM recipes r ${CURRENT_JOIN}
+       WHERE r.site = ? AND r.task_id != ? AND r.status IN ('trusted', 'forming', 'outdated')
        ORDER BY CASE r.status WHEN 'trusted' THEN 0 WHEN 'forming' THEN 1 ELSE 2 END, r.agents_succeeded DESC LIMIT 4`,
-    ).bind(site, row.task_type).all<Pick<RecipeRow, 'title' | 'slug' | 'status' | 'agents_succeeded'>>(),
+    ).bind(site, task.id).all<Pick<RecipeRow, 'title' | 'slug' | 'status' | 'agents_succeeded'>>(),
+    env.DB.prepare('SELECT COUNT(*) AS n FROM upvotes WHERE recipe_id = ?').bind(row.id).first<{ n: number }>(),
   ]);
 
   const trust = parseTrust(row.trust_json);
@@ -262,9 +269,10 @@ export async function getRecipe(env: Bindings, siteRaw: string, slugRaw: string,
     kind: 'recipe',
     id: row.id,
     site,
-    slug: row.slug,
-    task_type: row.task_type,
-    title: row.title,
+    slug: task.slug,
+    task_id: row.task_id,
+    title: task.label,
+    upvotes: votes?.n ?? 0,
     version: row.version,
     status: row.status,
     is_current: isCurrent,

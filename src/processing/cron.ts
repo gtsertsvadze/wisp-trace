@@ -4,7 +4,7 @@ import { MIN, lastCompleteWeek } from '../lib/time';
 import { computeAwards } from './awards';
 import { rebuildDirtyGroups } from './recipes';
 import { dropSnapshots, putSnapshot } from './snapshots';
-import { rebuildDailyStats, weeklyTrends } from './trends';
+import { weeklyTrends } from './trends';
 
 export type JobName = 'recipes' | 'trends' | 'awards' | 'snapshots';
 
@@ -27,14 +27,13 @@ export async function runJobs(
           result = await rebuildDirtyGroups(env, { now });
           break;
         case 'trends': {
-          const rows = await rebuildDailyStats(env, { now });
           const weeks = [...new Set([lastCompleteWeek(now), ...(opts.week ? [opts.week] : [])])];
           const warmed: Record<string, number> = {};
           for (const week of weeks) {
             await dropSnapshots(env, `trends:${week}`);
-            warmed[week] = (await weeklyTrends(env, { week, now })).groups.length;
+            warmed[week] = (await weeklyTrends(env, { week, now })).tasks.length;
           }
-          result = { daily_rows: rows, groups: warmed };
+          result = { tasks: warmed };
           break;
         }
         case 'awards': {

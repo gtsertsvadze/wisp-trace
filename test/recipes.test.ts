@@ -38,7 +38,7 @@ function group() {
   return { traces: rows.map(r => r.t).sort((a, b) => b.occurred_at - a.occurred_at), steps: rows.flatMap(r => r.s) };
 }
 
-const base = { site: 'fitlane.com', task_type: 'membership_cancellation', now: NOW, previous: null, maxVersion: 0 };
+const base = { site: 'fitlane.com', task: { id: 'tk_test', slug: 'cancel-fitlane-membership', label: 'Cancel Fitlane membership' }, now: NOW, previous: null, maxVersion: 0 };
 
 describe('deriveRecipe', () => {
   it('builds a trusted recipe with the shared path, a dead end and secure steps', () => {
@@ -48,8 +48,10 @@ describe('deriveRecipe', () => {
     const r = res.recipe!;
     expect(r.status).toBe('trusted');
     expect(r.agents_succeeded).toBe(6);
-    expect(r.title).toBe('Cancel a membership');
-    expect(r.slug).toBe('cancel-a-membership');
+    expect(r.title).toBe('Cancel Fitlane membership');
+    expect(r.task_id).toBe('tk_test');
+    expect(res.contributors).toHaveLength(6);
+    expect(r.slug).toBe('cancel-fitlane-membership');
     expect(r.version).toBe(1);
 
     const steps = publicSteps(r.steps_json);

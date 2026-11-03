@@ -1,11 +1,10 @@
 // Trends page data: the weekly view model built on weeklyTrends() plus the Black Friday shopping baseline.
 // Every number here is k-anonymous: nothing is published from fewer than RULES.TREND_MIN_AGENTS distinct agents.
-// Distinct agents can't be summed across days or task types, so the weekly figures come from `traces` directly
-// (daily_task_stats only holds per-(day, type) agent counts and covers the last ~16 days).
+// Trends are per specific task ("Cancel Netflix subscription"); only tasks whose name is public are listed.
 import type { Bindings } from '../env';
-import type { TrendGroupWeek, WeeklyTrends } from '../types';
+import type { TrendTaskWeek, WeeklyTrends } from '../types';
 import { RULES } from '../lib/rules';
-import { TASK_TYPES } from '../lib/taxonomy';
+import { SHOPPING_VERBS } from '../lib/tasks';
 import { DAY, dayOf, dayStart, lastCompleteWeek, MIN, shiftWeek, weekStart } from '../lib/time';
 import { weeklyTrends } from '../processing/trends';
 import { cached } from '../processing/snapshots';
@@ -16,7 +15,9 @@ const K = RULES.TREND_MIN_AGENTS;
 export const isWeekId = (s: unknown): s is string => typeof s === 'string' && /^\d{4}-W(0[1-9]|[1-4]\d|5[0-3])$/.test(s);
 
 export interface MoverRow {
-  group: string;
+  label: string;
+  slug: string;
+  trending: boolean;
   multiplier: number;      // this week / last week
   traces: number;
   prev_traces: number;
@@ -26,7 +27,9 @@ export interface MoverRow {
 
 export interface TopRow {
   rank: number;
-  group: string;
+  label: string;
+  slug: string;
+  trending: boolean;
   traces: number;
   delta_pct: number | null; // vs last week, null when last week isn't published
 }
@@ -52,14 +55,14 @@ export interface TrendsPageData {
   prev_week: string;
   latest_week: string;     // last complete week; ?week= can't go past it
   trends: WeeklyTrends;
-  top_mover: TrendGroupWeek | null;
+  top_mover: TrendTaskWeek | null;
   movers: MoverRow[];      // up to 8, biggest change either way, shown by multiplier desc
-  top: TopRow[];           // up to 6 most delegated groups
+  top: TopRow[];           // up to 10 most delegated tasks
   days: DayColumn[];       // 14 columns ending yesterday
   shopping: ShoppingWatch;
 }
 
-const SHOPPING_TYPES = TASK_TYPES.filter(t => t.kind === 'Shopping').map(t => t.id);
+const SHOPPING_SQL = `t.task_id IN (SELECT id FROM tasks WHERE verb IN (${SHOPPING_VERBS.map(v => `'${v}'`).join(', ')}))`;
 // Black Friday 2026 watch: October 2026 is the baseline month, measured as a weekly rate.
 const OCT_FROM = Date.UTC(2026, 9, 1);
 const OCT_TO = Date.UTC(2026, 10, 1); // exclusive
@@ -69,30 +72,31 @@ async function shoppingWatch(env: Bindings, week: string): Promise<ShoppingWatch
   const baselineEnd = Math.min(OCT_TO, weekStart(week)); // never let the report week count toward its own baseline
   const baselineDays = Math.round((baselineEnd - OCT_FROM) / DAY);
   if (baselineDays < 7) return none;
-  const placeholders = SHOPPING_TYPES.map(() => '?').join(',');
   const [wk, base] = await Promise.all([
     env.DB.prepare(
       `SELECT COUNT(*) AS n, COUNT(DISTINCT t.agent_id) AS agents FROM traces t JOIN agents a ON a.id = t.agent_id
-       WHERE t.week = ? AND t.task_type IN (${placeholders}) AND ${ELIGIBLE}`,
-    ).bind(week, ...SHOPPING_TYPES).first<{ n: number; agents: number }>(),
+       WHERE t.week = ? AND ${SHOPPING_SQL} AND ${ELIGIBLE}`,
+    ).bind(week).first<{ n: number; agents: number }>(),
     env.DB.prepare(
       `SELECT COUNT(*) AS n, COUNT(DISTINCT t.agent_id) AS agents FROM traces t JOIN agents a ON a.id = t.agent_id
-       WHERE t.day >= ? AND t.day < ? AND t.task_type IN (${placeholders}) AND ${ELIGIBLE}`,
-    ).bind(dayOf(OCT_FROM), dayOf(baselineEnd), ...SHOPPING_TYPES).first<{ n: number; agents: number }>(),
+       WHERE t.day >= ? AND t.day < ? AND ${SHOPPING_SQL} AND ${ELIGIBLE}`,
+    ).bind(dayOf(OCT_FROM), dayOf(baselineEnd)).first<{ n: number; agents: number }>(),
   ]);
   if (!wk || !base || wk.agents < K || base.agents < K || base.n === 0) return none;
   const baselineWeekly = (base.n / baselineDays) * 7;
   return { multiplier: Math.round((wk.n / baselineWeekly) * 10) / 10, week_traces: wk.n, baseline_weekly: Math.round(baselineWeekly) };
 }
 
-function pickMovers(all: TrendGroupWeek[]): MoverRow[] {
-  const withMult = all.filter((g): g is TrendGroupWeek & { multiplier: number } => g.multiplier !== null && g.multiplier > 0);
+function pickMovers(all: TrendTaskWeek[]): MoverRow[] {
+  const withMult = all.filter((g): g is TrendTaskWeek & { multiplier: number } => g.multiplier !== null && g.multiplier > 0);
   // "Biggest movers" means the largest change in either direction, so rank by |log(multiplier)|.
   const chosen = [...withMult].sort((a, b) => Math.abs(Math.log(b.multiplier)) - Math.abs(Math.log(a.multiplier)) || b.traces - a.traces).slice(0, 8);
   chosen.sort((a, b) => b.multiplier - a.multiplier || b.traces - a.traces);
   const max = Math.max(1, ...chosen.map(g => Math.max(g.traces, g.prev_traces)));
   return chosen.map(g => ({
-    group: g.group,
+    label: g.label,
+    slug: g.slug,
+    trending: g.trending,
     multiplier: g.multiplier,
     traces: g.traces,
     prev_traces: g.prev_traces,
@@ -101,10 +105,12 @@ function pickMovers(all: TrendGroupWeek[]): MoverRow[] {
   }));
 }
 
-function topGroups(groups: TrendGroupWeek[]): TopRow[] {
-  return groups.slice(0, 6).map((g, i) => ({
+function topTasks(tasks: TrendTaskWeek[]): TopRow[] {
+  return tasks.slice(0, 10).map((g, i) => ({
     rank: i + 1,
-    group: g.group,
+    label: g.label,
+    slug: g.slug,
+    trending: g.trending,
     traces: g.traces,
     delta_pct: g.multiplier === null ? null : Math.round((g.multiplier - 1) * 100),
   }));
@@ -140,7 +146,7 @@ export async function trendsPageData(env: Bindings, opts: { week?: string; now?:
       trends,
       top_mover: trends.movers[0] ?? null,
       movers: pickMovers(trends.movers),
-      top: topGroups(trends.groups),
+      top: topTasks(trends.tasks),
       days: dayColumns(trends.daily),
       shopping,
     };

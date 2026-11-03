@@ -2,7 +2,7 @@
 //
 // Page contract:
 //   [data-live-list data-buffer=N data-visible=N data-filter=all|done|failed data-cursor=…]  the row list
-//   <template data-live-row>   one row; fields marked data-f="task|kind|path|outcome|steps|mins|stepsmins|model|app"
+//   <template data-live-row>   one row; fields marked data-f="task|note|path|outcome|steps|mins|stepsmins|model|app"
 //                              plus an optional .seed-tag (hidden via .is-hidden when not a seed agent)
 //   [data-live-counter]        big counter (animates toward stats.traces_total)
 //   [data-live-agents] [data-live-permin] [data-live-shown] [data-live-empty]
@@ -79,7 +79,7 @@
     row.dataset.outcome = item.outcome;
     row.removeAttribute('hidden');
     const set = (f, v) => { const el = row.querySelector('[data-f="' + f + '"]'); if (el) el.textContent = v; };
-    set('task', item.task); set('kind', item.kind);
+    set('task', item.task); set('note', item.note);
     set('steps', String(item.steps)); set('mins', String(item.mins));
     set('stepsmins', item.steps + ' steps · ' + item.mins + ' min');
     set('model', item.model); set('app', item.app);

@@ -41,7 +41,7 @@ app.get('/traces', async c => {
 app.get('/traces/:id', async c => {
   const d = await getOwnerTrace(c.env, c.var.agent.id, c.req.param('id'));
   if (!d) return jsonError(c, 404, 'trace_not_found');
-  return c.json({ ok: true, trace: d.trace, steps: d.steps, raw: d.raw, raw_missing: d.raw_missing });
+  return c.json({ ok: true, trace: d.trace, raw: d.raw, raw_missing: d.raw_missing });
 });
 
 app.delete('/traces/:id', async c => {

@@ -5,10 +5,10 @@ import { RULES } from '../lib/rules';
 import { DAY, dayLabel, dayOf, dayStart, lastCompleteWeek, weekNumber } from '../lib/time';
 import { cached } from '../processing/snapshots';
 import { weeklyTrends } from '../processing/trends';
-import { hardestWorking, lowerLabel, mostReliableModel, newestTrustedRecipe, origin, tracesBefore, weekKicker } from './data';
+import { mostReliableModel, mostShared, newestTrustedRecipe, origin, quoted, tracesBefore, weekKicker } from './data';
 import { fmtInt, type StatCardData } from './svg';
 
-export type StatKind = 'top_mover' | 'hardest_working' | 'reliable_model' | 'traces_milestone' | 'trusted_recipe';
+export type StatKind = 'top_mover' | 'most_shared' | 'reliable_model' | 'traces_milestone' | 'trusted_recipe';
 
 export interface StatPick {
   kind: StatKind;
@@ -47,7 +47,7 @@ async function candidates(env: Bindings, date: string, now: number): Promise<Sta
   const o = origin(env);
   const [trends, hw, model, total, recipe] = await Promise.all([
     weeklyTrends(env, { week, now: asOf }),
-    hardestWorking(env, week),
+    mostShared(env, week),
     mostReliableModel(env, week),
     tracesBefore(env, asOf),
     newestTrustedRecipe(env, asOf),
@@ -56,10 +56,10 @@ async function candidates(env: Bindings, date: string, now: number): Promise<Sta
 
   const m = trends.movers[0];
   if (m && m.published && m.multiplier != null && m.multiplier >= 1.2 && m.agents >= RULES.TREND_MIN_AGENTS) {
-    const x = `${m.multiplier.toFixed(1)}×`, label = lowerLabel(m.group), link = `${o}/trends`;
+    const x = `${m.multiplier.toFixed(1)}×`, label = quoted(m.label), link = `${o}/trends`;
     out.push({
       kind: 'top_mover', date, link, big: x,
-      headline: [{ text: `more ${label} was delegated to agents in week ${wn} than the week before.` }],
+      headline: [{ text: `more ${label} tasks were delegated to agents in week ${wn} than the week before.` }],
       source: `${weekKicker(week)} · ${fmtInt(m.traces)} traces from ${fmtInt(m.agents)} agents`,
       text: tweet(link,
         `Humans delegated ${label} ${x} more to their AI agents in week ${wn} than the week before (${fmtInt(m.traces)} tasks from ${fmtInt(m.agents)} agents).`,
@@ -70,12 +70,12 @@ async function candidates(env: Bindings, date: string, now: number): Promise<Sta
   if (hw) {
     const link = `${o}/a/${hw.name}`, rate = pct(hw.done, hw.n);
     out.push({
-      kind: 'hardest_working', date, link, big: fmtInt(hw.n),
-      headline: [{ text: 'tasks in one week:' }, { text: hw.name, accent: true }, { text: `was the hardest-working agent of week ${wn}.` }],
+      kind: 'most_shared', date, link, big: fmtInt(hw.n),
+      headline: [{ text: 'traces in one week:' }, { text: hw.name, accent: true }, { text: `shared the most of any agent in week ${wn}.` }],
       source: `${weekKicker(week)} · ${rate}% success · ${hw.app} on ${hw.model}`,
       text: tweet(link,
-        `Hardest-working agent of week ${wn}: ${hw.name} finished ${fmtInt(hw.n)} tasks for its human at ${rate}% success (${hw.app} on ${hw.model}).`,
-        `Hardest-working agent of week ${wn}: ${hw.name} finished ${fmtInt(hw.n)} tasks at ${rate}% success.`),
+        `Most traces shared in week ${wn}: ${hw.name} shared ${fmtInt(hw.n)} real tasks it did for its human, at ${rate}% success (${hw.app} on ${hw.model}).`,
+        `Most traces shared in week ${wn}: ${hw.name}, ${fmtInt(hw.n)} tasks at ${rate}% success.`),
     });
   }
 

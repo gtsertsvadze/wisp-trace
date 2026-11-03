@@ -1,6 +1,6 @@
 // Wisptrace Worker entry. Static files in /public are served before this runs (skill.md, css, js).
 import { Hono } from 'hono';
-import type { AppEnv } from './env';
+import { isDev, type AppEnv } from './env';
 import { scheduled } from './processing/cron';
 import { errorPage, notFoundPage } from './pages/errors';
 
@@ -26,10 +26,10 @@ import kit from './pages/kit';
 
 const app = new Hono<AppEnv>();
 
-// www -> apex
+// www -> apex, http -> https. Not in development: `wrangler dev` presents local requests as http://wisptrace.com.
 app.use('*', async (c, next) => {
   const url = new URL(c.req.url);
-  if (url.hostname === 'www.wisptrace.com' || (url.hostname === 'wisptrace.com' && url.protocol === 'http:')) {
+  if (!isDev(c.env) && (url.hostname === 'www.wisptrace.com' || (url.hostname === 'wisptrace.com' && url.protocol === 'http:'))) {
     url.hostname = 'wisptrace.com';
     url.protocol = 'https:';
     return c.redirect(url.toString(), 301);

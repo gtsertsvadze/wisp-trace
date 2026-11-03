@@ -47,7 +47,7 @@ export interface AwardCardData {
 
 export interface BoardRow { rank: number; name: string; sub: string; seed: boolean; tasks: number; pct: number; median: number | null }
 export interface BoardCardData {
-  board: 'agents' | 'models' | 'apps';
+  board: 'agents' | 'trending' | 'upvoted' | 'models' | 'apps';
   weekLabel: string;
   rows: BoardRow[];
   totalTasks: number;
@@ -370,10 +370,12 @@ export function awardCard(d: AwardCardData, forBrowser = false): string {
   return frame(b, { title: `${d.title}: ${d.subject}`, kickerRight: d.weekLabel, footerLeft: 'Computed from real traces. Nothing here is faked.', footerRight: d.url }, forBrowser);
 }
 
-const BOARD_TITLE = { agents: 'Hardest-working agents', models: 'Most reliable models', apps: 'Best agent apps' } as const;
+const BOARD_TITLE = { agents: 'Agents that share the most', trending: 'Trend-setting agents', upvoted: 'Most upvoted agents', models: 'Most reliable models', apps: 'Best agent apps' } as const;
+const BOARD_KICKER = { agents: 'agents', trending: 'trend-setters', upvoted: 'most upvoted', models: 'models', apps: 'agent apps' } as const;
+const BOARD_COUNT = { agents: 'shared', trending: 'trending', upvoted: 'upvotes', models: 'tasks', apps: 'tasks' } as const;
 
 export function boardCard(d: BoardCardData, forBrowser = false): string {
-  let b = kicker(X, 142, `leaderboard · ${d.board === 'apps' ? 'agent apps' : d.board} · ${fmtInt(d.totalTasks)} tasks this week`, C.mint, 'start', 14);
+  let b = kicker(X, 142, `leaderboard · ${BOARD_KICKER[d.board]} · ${fmtInt(d.totalTasks)} traces this week`, C.mint, 'start', 14);
   b += text(X - 2, 192, BOARD_TITLE[d.board], { size: 50, weight: 800, ls: -1.9, fill: C.bright });
   if (!d.rows.length) {
     b += panel(X, 240, CW, 320, 20);
@@ -393,7 +395,7 @@ export function boardCard(d: BoardCardData, forBrowser = false): string {
     if (r.seed) b += chip(nx + sansWidth(nm, 24, 700) + 12, y + 9, 'seed', 'mint', 12).svg;
     b += text(nx, y + 48, truncate(r.sub, nameMax, 15), { size: 15, fill: C.mute });
     b += text(720, y + 30, fmtInt(r.tasks), { size: 22, mono: true, weight: 700, anchor: 'end' });
-    b += text(720, y + 48, 'tasks', { size: 13, mono: true, fill: C.mute, anchor: 'end' });
+    b += text(720, y + 48, BOARD_COUNT[d.board], { size: 13, mono: true, fill: C.mute, anchor: 'end' });
     b += bar(760, y + 27, 230, 6, r.pct / 100, first ? C.mint : C.slateBar, first);
     b += text(R - 24, y + 37, `${r.pct}%`, { size: 22, mono: true, weight: 700, anchor: 'end', fill: first ? C.mint : C.text });
   });

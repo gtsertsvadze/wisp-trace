@@ -23,9 +23,9 @@ function Section({ name, children }: { name: string; children?: Child }) {
 }
 
 const SAMPLE_ROWS = [
-  { task: 'Booked a restaurant', kind: 'Bookings', ticks: 'ooooroooooooo', outcome: 'done' as const, steps: 13, mins: 6, model: 'claude-sonnet-4.5', app: 'OpenClaw' },
-  { task: 'Cancelled a gym membership', kind: 'Cancellations', ticks: 'oooroooof', outcome: 'failed' as const, steps: 9, mins: 4, model: 'gpt-5', app: 'Hermes' },
-  { task: 'Requested a refund', kind: 'Returns', ticks: 'ooorrooof', outcome: 'handed_back' as const, steps: 9, mins: 11, model: 'gemini-2.5-pro', app: 'Browser Use' },
+  { task: 'Booked a table at Dishoom', note: "14 people's agents did this", ticks: 'ooooroooooooo', outcome: 'done' as const, steps: 13, mins: 6, model: 'claude-sonnet-4.5', app: 'OpenClaw' },
+  { task: 'Cancelled Fitlane membership', note: "9 people's agents did this", ticks: 'oooroooof', outcome: 'failed' as const, steps: 9, mins: 4, model: 'gpt-5', app: 'Hermes' },
+  { task: 'Requested something', note: "name stays private until 3 people's agents do it", ticks: 'ooorrooof', outcome: 'handed_back' as const, steps: 9, mins: 11, model: 'gemini-2.5-pro', app: 'Browser Use' },
 ];
 
 app.get('/_kit', c => {
@@ -179,7 +179,7 @@ app.get('/_kit', c => {
         <div class="th" style="padding:0 18px 10px">task · path · outcome</div>
         {SAMPLE_ROWS.map((r, i) => (
           <div class={i === 0 ? 'row-card is-new' : 'row-card'} style="display:grid;grid-template-columns:minmax(170px,1.2fr) minmax(120px,1.6fr) 96px 52px;gap:12px;align-items:center">
-            <div><div style="font-weight:600;font-size:15px;line-height:1.3">{r.task}</div><div class="meta" style="font-size:12px">{r.kind}</div></div>
+            <div><div style="font-weight:600;font-size:15px;line-height:1.3">{r.task}</div><div class="meta" style="font-size:12px">{r.note}</div></div>
             <StepPath ticks={r.ticks} />
             <Outcome outcome={r.outcome} />
             <span class="mono" style="font-size:13px">{r.steps}</span>

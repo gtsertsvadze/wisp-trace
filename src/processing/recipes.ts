@@ -1,20 +1,23 @@
-// Recipe synthesis: compare many agents' traces of the same (site, task type) and extract the path that
-// works plus the dead ends. Core is the pure deriveRecipe(); rebuildDirtyGroups/buildGroup wrap it with D1.
+// Recipe synthesis: compare many agents' full traces of the same specific task on the same site and extract the path
+// that works plus the dead ends. Core is the pure deriveRecipe(); rebuildDirtyGroups/buildGroup wrap it with D1 and
+// read the steps straight from the stored full traces (rawstore): no step table is kept.
 //
 // Safety: every published text passes sanitizeStepText + isCircumvention; secure steps get fixed
-// AGENT_TEXT.secureStep text; titles come from the taxonomy; the optional LLM only ever sees
-// already-sanitized texts, and its output is sanitized again.
+// AGENT_TEXT.secureStep text; titles are the task's name (which passed the same firewall); the optional LLM only
+// ever sees already-sanitized texts, and its output is sanitized again.
 
 import type { Bindings } from '../env';
-import type { DeadEnd, Outcome, RecipeRow, RecipeStep, Sensitive, SitePolicyRow, TraceStepRow } from '../types';
+import type { DeadEnd, Outcome, RecipeRow, RecipeStep, Sensitive, SitePolicyRow, TaskRow } from '../types';
 import { AGENT_TEXT } from '../lib/agent-text';
 import { newId } from '../lib/ids';
 import { llmJson } from '../lib/llm';
 import { RULES } from '../lib/rules';
+import { getRawMany } from '../lib/rawstore';
 import { isCircumvention, sanitizeStepText, secureKind } from '../lib/sanitize';
-import { taskType } from '../lib/taxonomy';
 import { DAY } from '../lib/time';
 import { getSitePolicy } from './policies';
+import { normalizeSteps, type NormStep } from './steps';
+import { recountTasks } from './tasks';
 
 export interface GroupTrace {
   id: string;
@@ -26,7 +29,7 @@ export interface GroupTrace {
   steps_count: number;
   duration_s: number | null;
 }
-export type GroupStep = Pick<TraceStepRow, 'trace_id' | 'idx' | 'type' | 'action' | 'target' | 'path' | 'result' | 'error' | 'sig' | 'sensitive'>;
+export type GroupStep = NormStep & { trace_id: string };
 
 /** Stored form of a step: the public RecipeStep plus the hidden alignment signature. */
 export type StoredStep = RecipeStep & { sig: string };
@@ -35,9 +38,9 @@ export type StoredDeadEnd = DeadEnd & { sig: string; next?: string };
 
 export interface DeriveInput {
   site: string;
-  task_type: string;
-  traces: GroupTrace[];          // last 90 days, newest first, <= 600
-  steps: GroupStep[];            // trace_steps of those traces
+  task: Pick<TaskRow, 'id' | 'slug' | 'label'>;
+  traces: GroupTrace[];          // last 90 days, newest first, <= RULES.RECIPE_BUILD_MAX_TRACES
+  steps: GroupStep[];            // steps re-derived from those traces' stored full JSON
   current: RecipeRow | null;     // latest non-superseded recipe
   previous?: RecipeRow | null;   // version right before `current` (superseded), if any
   maxVersion?: number;           // highest version ever stored for the group
@@ -50,6 +53,7 @@ export interface DeriveResult {
   recipe: RecipeRow | null;      // row to insert (create) or overwrite (update/block)
   supersede_id: string | null;   // older version to mark superseded
   polish: boolean;               // texts newly derived: eligible for LLM polish
+  contributors: string[];        // agents whose successful traces follow this version's path (upvotes credit them)
 }
 
 const SKIP_TYPES = new Set(['think', 'wait', 'scroll', 'read', 'tool']);
@@ -275,8 +279,7 @@ function parseJson<T>(s: string | null | undefined, fallback: T): T {
 function assemble(
   base: { id: string; version: number; created_at: number; prev_outdated_at: number | null; synthesizer: RecipeRow['synthesizer'] },
   input: DeriveInput, steps: StoredStep[], deadEnds: StoredDeadEnd[], versionTraces: TraceInfo[],
-): RecipeRow {
-  const tt = taskType(input.task_type);
+): { row: RecipeRow; contributors: string[] } {
   const sigs = steps.map(s => s.sig);
   const succ = versionTraces.filter(t => t.outcome === 'done');
   const covering = succ.filter(t => covers(t.seq, sigs));
@@ -316,12 +319,12 @@ function assemble(
 
   linkNotes(steps, deadEnds);
   for (const s of steps) s.agents_total = distinct(succ);
-  return {
+  const row: RecipeRow = {
     id: base.id,
+    task_id: input.task.id,
     site: input.site,
-    task_type: input.task_type,
-    slug: tt.slug,
-    title: tt.recipe,
+    slug: input.task.slug,
+    title: input.task.label,
     version: base.version,
     status: outdated ? 'outdated' : agentsSucceeded >= RULES.RECIPE_TRUSTED_MIN_AGENTS ? 'trusted' : 'forming',
     steps_json: JSON.stringify(steps),
@@ -340,6 +343,7 @@ function assemble(
     last_confirmed_at: lastConfirmed,
     outdated_at: outdated ? (base.prev_outdated_at ?? input.now) : null,
   };
+  return { row, contributors: [...new Set(covering.map(t => t.agent_id))] };
 }
 
 function textsOf(r: RecipeRow | null): Set<string> {
@@ -352,11 +356,11 @@ function textsOf(r: RecipeRow | null): Set<string> {
 /** Pure: decide what the group's recipe should look like now. No I/O. */
 export function deriveRecipe(input: DeriveInput): DeriveResult {
   const { current, now } = input;
-  const none: DeriveResult = { op: 'none', recipe: null, supersede_id: null, polish: false };
+  const none: DeriveResult = { op: 'none', recipe: null, supersede_id: null, polish: false, contributors: [] };
 
   if (input.policy?.policy === 'blocks') {
     if (!current) return none;
-    return { op: 'block', recipe: { ...current, status: 'blocked', updated_at: now }, supersede_id: null, polish: false };
+    return { op: 'block', recipe: { ...current, status: 'blocked', updated_at: now }, supersede_id: null, polish: false, contributors: [] };
   }
 
   const byTrace = new Map<string, GroupStep[]>();
@@ -377,11 +381,12 @@ export function deriveRecipe(input: DeriveInput): DeriveResult {
   }
   const prevTexts = textsOf(current);
 
-  const finish = (op: 'create' | 'update', row: RecipeRow, supersede: string | null): DeriveResult => {
+  const finish = (op: 'create' | 'update', built: { row: RecipeRow; contributors: string[] }, supersede: string | null): DeriveResult => {
+    const { row, contributors } = built;
     const fresh = [...textsOf(row)].some(t => !prevTexts.has(t));
     if (op === 'update' && !fresh) row.synthesizer = current?.synthesizer ?? 'heuristic';
     else if (fresh) row.synthesizer = 'heuristic';
-    return { op, recipe: row, supersede_id: supersede, polish: fresh };
+    return { op, recipe: row, supersede_id: supersede, polish: fresh, contributors };
   };
 
   const newVersion = (epoch: number, seed: TraceInfo[]): DeriveResult => {
@@ -393,8 +398,8 @@ export function deriveRecipe(input: DeriveInput): DeriveResult {
     if (!steps.length) return none;
     const deadEnds = buildDeadEnds(versionTraces, steps, keepDead);
     const version = Math.max(input.maxVersion ?? 0, current?.version ?? 0) + 1;
-    const row = assemble({ id: newId('rc'), version, created_at: now, prev_outdated_at: null, synthesizer: 'heuristic' }, input, steps, deadEnds, versionTraces);
-    return finish('create', row, current?.id ?? null);
+    const built = assemble({ id: newId('rc'), version, created_at: now, prev_outdated_at: null, synthesizer: 'heuristic' }, input, steps, deadEnds, versionTraces);
+    return finish('create', built, current?.id ?? null);
   };
 
   if (!current) return newVersion(input.previous?.outdated_at ?? 0, []);
@@ -409,11 +414,11 @@ export function deriveRecipe(input: DeriveInput): DeriveResult {
     let steps: StoredStep[] = seq ? buildSteps(seq, succ, keepSteps) : [];
     if (!steps.length) steps = curSteps.map(s => ({ ...s }));
     const deadEnds = buildDeadEnds(versionTraces, steps, keepDead);
-    const row = assemble(
+    const built = assemble(
       { id: current.id, version: current.version, created_at: current.created_at, prev_outdated_at: current.outdated_at, synthesizer: current.synthesizer },
       input, steps, deadEnds, versionTraces,
     );
-    return finish('update', row, null);
+    return finish('update', built, null);
   };
 
   if (current.status === 'outdated' && current.outdated_at) {
@@ -496,7 +501,7 @@ async function polish(env: Bindings, row: RecipeRow): Promise<void> {
 // D1 wrappers
 // ---------------------------------------------------------------------------
 const COLS: (keyof RecipeRow)[] = [
-  'id', 'site', 'task_type', 'slug', 'title', 'version', 'status', 'steps_json', 'dead_ends_json', 'trust_json',
+  'id', 'task_id', 'site', 'slug', 'title', 'version', 'status', 'steps_json', 'dead_ends_json', 'trust_json',
   'agents_succeeded', 'agents_failed', 'agents_handed_back', 'traces_count', 'median_steps', 'median_s',
   'works_best_on', 'synthesizer', 'created_at', 'updated_at', 'last_confirmed_at', 'outdated_at',
 ];
@@ -510,40 +515,54 @@ function writeRecipe(env: Bindings, row: RecipeRow, insert: boolean): D1Prepared
   return env.DB.prepare(`UPDATE recipes SET ${set} WHERE id = ?`).bind(...vals.slice(1), row.id);
 }
 
+const STEP_SKIP_SQL = new Set(['think', 'wait', 'scroll', 'read', 'tool']);
+
+/** Steps of the group's traces, re-derived from their stored full JSON (traces without one are skipped). */
+async function loadSteps(env: Bindings, traces: (GroupTrace & { raw_key: string | null })[]): Promise<GroupStep[]> {
+  const keys = traces.map(t => t.raw_key).filter((k): k is string => !!k);
+  const raws = await getRawMany(env, keys);
+  const out: GroupStep[] = [];
+  for (const t of traces) {
+    const raw = t.raw_key ? raws.get(t.raw_key) : undefined;
+    if (!raw) continue;
+    let steps: unknown;
+    try { steps = (JSON.parse(raw) as { steps?: unknown }).steps; } catch { continue; }
+    for (const s of normalizeSteps(steps, 300).steps) if (!STEP_SKIP_SQL.has(s.type)) out.push({ ...s, trace_id: t.id });
+  }
+  return out;
+}
+
 export async function buildGroup(env: Bindings, grp: string, now = Date.now()): Promise<DeriveResult['op']> {
-  const g = await env.DB.prepare('SELECT site, task_type FROM recipe_groups WHERE grp = ?').bind(grp).first<{ site: string; task_type: string }>();
-  const [site, task_type] = g ? [g.site, g.task_type] : grp.split('|');
-  if (!site || !task_type) return 'none';
+  const g = await env.DB.prepare('SELECT task_id, site FROM recipe_groups WHERE grp = ?').bind(grp).first<{ task_id: string; site: string }>();
+  const [task_id, site] = g ? [g.task_id, g.site] : grp.split('|');
+  if (!site || !task_id) return 'none';
+  const task = await env.DB.prepare('SELECT id, slug, label FROM tasks WHERE id = ?').bind(task_id).first<Pick<TaskRow, 'id' | 'slug' | 'label'>>();
+  if (!task) return 'none';
   // Clear first so a trace arriving mid-build re-dirties the group instead of being lost.
   await env.DB.prepare('UPDATE recipe_groups SET dirty = 0 WHERE grp = ?').bind(grp).run();
   try {
     const since = now - 90 * DAY;
-    const [tr, st, cur, maxV, policy] = await Promise.all([
+    const [tr, cur, maxV, policy] = await Promise.all([
       env.DB.prepare(
-        `SELECT t.id, t.agent_id, t.occurred_at, t.outcome, t.model, t.app, t.steps_count, t.duration_s
+        `SELECT t.id, t.agent_id, t.occurred_at, t.outcome, t.model, t.app, t.steps_count, t.duration_s, t.raw_key
          FROM traces t JOIN agents a ON a.id = t.agent_id
          WHERE t.recipe_group = ? AND t.occurred_at >= ? AND a.deleted_at IS NULL
-         ORDER BY t.occurred_at DESC LIMIT 600`,
-      ).bind(grp, since).all<GroupTrace>(),
-      env.DB.prepare(
-        `SELECT s.trace_id, s.idx, s.type, s.action, s.target, s.path, s.result, s.error, s.sig, s.sensitive
-         FROM trace_steps s
-         WHERE s.trace_id IN (SELECT id FROM traces WHERE recipe_group = ? AND occurred_at >= ? ORDER BY occurred_at DESC LIMIT 600)
-           AND s.idx < 300 AND s.type NOT IN ('think', 'wait', 'scroll', 'read', 'tool')`,
-      ).bind(grp, since).all<GroupStep>(),
-      env.DB.prepare("SELECT * FROM recipes WHERE site = ? AND task_type = ? AND status != 'superseded' ORDER BY version DESC")
-        .bind(site, task_type).all<RecipeRow>(),
-      env.DB.prepare('SELECT MAX(version) AS v FROM recipes WHERE site = ? AND task_type = ?').bind(site, task_type).first<{ v: number | null }>(),
+         ORDER BY t.occurred_at DESC LIMIT ?`,
+      ).bind(grp, since, RULES.RECIPE_BUILD_MAX_TRACES).all<GroupTrace & { raw_key: string | null }>(),
+      env.DB.prepare("SELECT * FROM recipes WHERE task_id = ? AND site = ? AND status != 'superseded' ORDER BY version DESC")
+        .bind(task_id, site).all<RecipeRow>(),
+      env.DB.prepare('SELECT MAX(version) AS v FROM recipes WHERE task_id = ? AND site = ?').bind(task_id, site).first<{ v: number | null }>(),
       getSitePolicy(env, site),
     ]);
+    const steps = await loadSteps(env, tr.results);
     const [current, ...extras] = cur.results;
     const previous = current
-      ? await env.DB.prepare("SELECT * FROM recipes WHERE site = ? AND task_type = ? AND status = 'superseded' AND version < ? ORDER BY version DESC LIMIT 1")
-        .bind(site, task_type, current.version).first<RecipeRow>()
+      ? await env.DB.prepare("SELECT * FROM recipes WHERE task_id = ? AND site = ? AND status = 'superseded' AND version < ? ORDER BY version DESC LIMIT 1")
+        .bind(task_id, site, current.version).first<RecipeRow>()
       : null;
 
     const res = deriveRecipe({
-      site, task_type, traces: tr.results, steps: st.results, current: current ?? null, previous,
+      site, task, traces: tr.results, steps, current: current ?? null, previous,
       maxVersion: maxV?.v ?? 0, policy, now,
     });
     if (res.polish && res.recipe) await polish(env, res.recipe);
@@ -554,6 +573,14 @@ export async function buildGroup(env: Bindings, grp: string, now = Date.now()): 
     }
     if (res.supersede_id) writes.push(env.DB.prepare("UPDATE recipes SET status = 'superseded', updated_at = ? WHERE id = ?").bind(now, res.supersede_id));
     if (res.recipe) writes.push(writeRecipe(env, res.recipe, res.op === 'create'));
+    if (res.recipe && (res.op === 'create' || res.op === 'update')) {
+      writes.push(env.DB.prepare('DELETE FROM recipe_contributors WHERE recipe_id = ?').bind(res.recipe.id));
+      for (let i = 0; i < res.contributors.length; i += 45) {
+        const chunk = res.contributors.slice(i, i + 45);
+        writes.push(env.DB.prepare(`INSERT OR IGNORE INTO recipe_contributors (recipe_id, agent_id) VALUES ${chunk.map(() => '(?, ?)').join(', ')}`)
+          .bind(...chunk.flatMap(id => [res.recipe!.id, id])));
+      }
+    }
     writes.push(env.DB.prepare('UPDATE recipe_groups SET built_at = ? WHERE grp = ?').bind(now, grp));
     await env.DB.batch(writes);
     return res.op;
@@ -570,6 +597,9 @@ export async function rebuildDirtyGroups(
   const { results } = await env.DB.prepare('SELECT grp FROM recipe_groups WHERE dirty = 1 ORDER BY last_trace_at DESC LIMIT ?')
     .bind(opts.limit ?? 50).all<{ grp: string }>();
   const out = { groups: 0, created: 0, updated: 0, blocked: 0, unchanged: 0, errors: 0 };
+  // Keep the public-name threshold exact for every task that just got traces (ingest counts incrementally).
+  await recountTasks(env, results.map(r => r.grp.split('|')[0]!)).catch(e =>
+    console.error('recipes: recount failed', e instanceof Error ? e.message : String(e)));
   for (const { grp } of results) {
     out.groups++;
     try {

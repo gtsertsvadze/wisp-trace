@@ -5,9 +5,10 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import type { Child } from 'hono/jsx';
 import type { AppEnv } from '../env';
-import type { AgentRow, TraceStepRow } from '../types';
+import type { AgentRow } from '../types';
 import { agentByOwnerToken } from '../lib/auth';
 import { fmtHM, fmtInt, fmtUsd, outcomeLabel, pad2 } from '../lib/format';
+import { RULES } from '../lib/rules';
 import { ago } from '../lib/time';
 import {
   deleteAllOwnerTraces, deleteOwnerAgent, deleteOwnerTrace, getOwnerTrace, isTraceId, listOwnerTraces, ownerTotals,
@@ -99,8 +100,9 @@ function PrivacyNote() {
       <p>
         Anyone with this link can read and delete these traces, so don't share it. Everything here was masked on your agent's
         machine and again on arrival: names, emails, phone numbers, addresses and card details show up as labels like
-        <span class="ow-label">[EMAIL]</span>; passwords, keys and cookies were stripped. Public pages show only the task type,
-        steps, minutes and outcome — never the site, the task text or the time.
+        <span class="ow-label">[EMAIL]</span>; passwords, keys and cookies were stripped. Public pages show a task by its name
+        (“Cancelled Netflix subscription”) only once {RULES.TASK_PUBLIC_MIN_CROWD} different people's agents have done it, plus steps,
+        minutes and outcome — never the task text below, the pages visited or the time.
       </p>
     </div>
   );
@@ -112,7 +114,7 @@ function TraceRow({ t, token }: { t: OwnerTraceItem; token: string }) {
       <a href={`${base(token)}?trace=${t.id}`} class="row-card row-link ow-row">
         <div class="ow-when mono"><Time ms={t.occurred_at} short /></div>
         <div class="ow-task">
-          <div class="ow-task-label">{t.task}</div>
+          <div class="ow-task-label">{t.task}{t.task_public ? null : <span class="meta"> · private name</span>}</div>
           {t.task_text ? <div class="ow-task-text">{t.task_text}</div> : null}
         </div>
         <div class="ow-site mono ellipsis">{t.site ?? '—'}</div>
@@ -151,10 +153,7 @@ function stepsFrom(d: OwnerTraceDetail): ViewStep[] {
       sensitive: s(st?.sensitive),
     }));
   }
-  return d.steps.map((st: TraceStepRow) => ({
-    type: st.type, action: st.action, target: st.target, where: st.path, result: st.result,
-    observation: null, error: st.error, model: null, sensitive: st.sensitive,
-  }));
+  return [];
 }
 
 const RESULT_CLASS: Record<string, string> = { ok: 'is-ok', retry: 'is-retry', fail: 'is-fail' };
@@ -176,7 +175,7 @@ function Detail({ d, token }: { d: OwnerTraceDetail; token: string }) {
     ['model · app', `${t.model} · ${t.app}`],
     ['sites', t.sites.length ? t.sites.join(', ') : t.site ?? '—'],
     ['masked', `${fmtInt(t.mask_client)} on the agent · ${fmtInt(t.mask_server)} more on arrival`],
-    ['classified', `${t.kind} · ${t.classifier}`],
+    ['task name', `${t.task_public ? `public · ${fmtInt(t.task_crowd)} people's agents did it` : `private until ${RULES.TASK_PUBLIC_MIN_CROWD} people's agents do it`} · named by ${t.task_source === 'agent' ? 'your agent' : t.task_source === 'llm' ? 'Wisptrace (model)' : 'Wisptrace (from the description)'}`],
   ];
   if (t.recipe_id) facts.push(['followed recipe', t.recipe_id]);
 
@@ -199,7 +198,7 @@ function Detail({ d, token }: { d: OwnerTraceDetail; token: string }) {
             <div class="panel-head"><span>Steps, in order</span><StepPath ticks={t.ticks} size={7} /></div>
             {d.raw_missing ? (
               <p class="meta ow-missing">
-                The full trace isn't stored for this one, so you see the normalised steps Wisptrace kept for recipes.
+                The full trace for this one is missing, so there are no steps to show.
               </p>
             ) : null}
             {steps.length ? (
@@ -249,7 +248,7 @@ function Detail({ d, token }: { d: OwnerTraceDetail; token: string }) {
                 <div class="ow-raw-tools"><button type="button" class="copy-chip" data-copy="" data-copy-target="#ow-raw-json">copy JSON</button></div>
                 <pre id="ow-raw-json" class="ow-raw-pre">{json}</pre>
               </>
-            ) : <p class="meta">Only the normalised steps above were kept for this trace.</p>}
+            ) : <p class="meta">The full trace for this one is missing.</p>}
           </details>
         </div>
 
@@ -262,7 +261,7 @@ function Detail({ d, token }: { d: OwnerTraceDetail; token: string }) {
           </div>
           <div class="card card-coral ow-danger">
             <Kicker small tone="coral">Delete</Kicker>
-            <p class="body-sm">Removes this trace, its steps and the stored raw JSON for good. Recipes rebuild without it.</p>
+            <p class="body-sm">Removes this trace and its stored full JSON for good. Recipes, task counts and upvotes rebuild without it.</p>
             <Confirm token={token} what="trace" id={t.id} label="Delete this trace"
               question="Delete this trace forever? This can't be undone." action="Yes, delete it" />
           </div>

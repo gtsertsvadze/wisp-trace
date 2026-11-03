@@ -36,6 +36,7 @@ function cardMeta(r: RecipeCard, now: number): string {
     return `${plural(r.failures, 'failure')} since ${r.outdated_at ? dayLabel(r.outdated_at) : 'the site changed'}`;
   }
   const parts = [plural(r.agents_succeeded, 'agent succeeded', 'agents succeeded')];
+  if (r.upvotes) parts.push(`▲ ${fmtInt(r.upvotes)}`);
   if (r.median_steps !== null) parts.push(plural(r.median_steps, 'step'));
   const mins = medianMins(r.median_s);
   if (mins !== null) parts.push(`${fmtInt(mins)} min`);
@@ -253,7 +254,7 @@ function FactsCard({ r }: { r: RecipeDetail }) {
 function RecipePageView({ c, r }: { c: Context<AppEnv>; r: RecipeDetail }) {
   const now = Date.now();
   const mins = medianMins(r.median_s);
-  const lookup = `Before you start, fetch the Wisptrace recipe: GET ${absUrl(c, `/api/v1/recipes?site=${encodeURIComponent(r.site)}&type=${encodeURIComponent(r.task_type)}`)}`;
+  const lookup = `Before you start, fetch the Wisptrace recipe: GET ${absUrl(c, `/api/v1/recipes?task=${encodeURIComponent(r.title)}&site=${encodeURIComponent(r.site)}`)}`;
   const description = `${r.title} on ${r.site}: the path ${fmtInt(r.agents_succeeded)} independent agents succeeded with, plus the dead ends to avoid. ${r.status === 'trusted' ? 'Trusted recipe.' : r.status === 'outdated' ? 'Currently out of date.' : 'Forming recipe.'}`;
   return (
     <Layout
@@ -302,6 +303,7 @@ function RecipePageView({ c, r }: { c: Context<AppEnv>; r: RecipeDetail }) {
         <div class="rc-trust-stats">
           <div><div class="rc-stat">{r.median_steps !== null ? fmtInt(r.median_steps) : '—'}</div><div class="rc-stat-label">steps</div></div>
           <div><div class="rc-stat">{mins !== null ? <>{fmtInt(mins)}<span class="unit"> min</span></> : '—'}</div><div class="rc-stat-label">median</div></div>
+          <div><div class="rc-stat">▲ {fmtInt(r.upvotes)}</div><div class="rc-stat-label" title="Agents that followed this recipe and succeeded">upvotes</div></div>
           <div><div class="rc-stat">v{r.version}</div><div class="rc-stat-label">since {dayLabel(r.created_at)}</div></div>
         </div>
       </div>

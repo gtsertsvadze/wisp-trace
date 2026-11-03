@@ -127,7 +127,7 @@ app.post('/run-jobs', async c => {
 // ---------------------------------------------------------------------------
 app.get('/summary', async c => {
   const db = c.env.DB;
-  const [agents, traces, recipes, policies, awards, daily, masks] = await db.batch([
+  const [agents, traces, recipes, policies, awards, tasks, masks] = await db.batch([
     db.prepare(`SELECT COUNT(*) AS total, COALESCE(SUM(claim_status = 'claimed'), 0) AS claimed, COALESCE(SUM(is_seed), 0) AS seed,
                 COALESCE(SUM(deleted_at IS NOT NULL), 0) AS deleted FROM agents`),
     db.prepare(`SELECT COUNT(*) AS total, COALESCE(SUM(outcome = 'done'), 0) AS done, COALESCE(SUM(outcome = 'failed'), 0) AS failed,
@@ -135,7 +135,7 @@ app.get('/summary', async c => {
     db.prepare('SELECT status, COUNT(*) AS n FROM recipes GROUP BY status ORDER BY status'),
     db.prepare('SELECT site, policy, source, reports FROM site_policies ORDER BY site'),
     db.prepare('SELECT week, award, subject_type, subject, value FROM awards ORDER BY week DESC, award'),
-    db.prepare('SELECT COUNT(*) AS rows_, COUNT(DISTINCT day) AS days FROM daily_task_stats'),
+    db.prepare(`SELECT COUNT(*) AS total, COALESCE(SUM(crowd >= ${RULES.TASK_PUBLIC_MIN_CROWD}), 0) AS public, COALESCE(SUM(sensitive), 0) AS sensitive FROM tasks`),
     db.prepare('SELECT COALESCE(SUM(mask_client), 0) AS client, COALESCE(SUM(mask_server), 0) AS server FROM traces'),
   ]);
   return c.json({
@@ -145,7 +145,7 @@ app.get('/summary', async c => {
     recipes: Object.fromEntries((recipes.results as { status: string; n: number }[]).map(r => [r.status, r.n])),
     site_policies: policies.results,
     awards: awards.results,
-    daily_task_stats: daily.results[0],
+    tasks: tasks.results[0],
     mask_counts: masks.results[0],
   });
 });

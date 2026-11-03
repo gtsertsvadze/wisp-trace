@@ -44,3 +44,25 @@ export async function deleteRaw(env: Bindings, keys: string[]): Promise<void> {
     await env.DB.prepare(`DELETE FROM trace_raw WHERE key IN (${chunk.map(() => '?').join(',')})`).bind(...chunk).run();
   }
 }
+
+/** Several masked traces at once (missing keys are absent from the map). */
+export async function getRawMany(env: Bindings, keys: string[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  if (env.TRACES) {
+    for (const key of keys) {
+      const obj = await env.TRACES.get(key);
+      if (obj) out.set(key, await obj.text());
+    }
+    return out;
+  }
+  for (let i = 0; i < keys.length; i += 25) {
+    const chunk = keys.slice(i, i + 25);
+    const { results } = await env.DB.prepare(`SELECT key, body FROM trace_raw WHERE key IN (${chunk.map(() => '?').join(',')})`)
+      .bind(...chunk).all<{ key: string; body: ArrayBuffer | number[] }>();
+    for (const r of results) {
+      const body = r.body instanceof ArrayBuffer ? r.body : new Uint8Array(r.body).buffer;
+      out.set(r.key, await gunzip(body));
+    }
+  }
+  return out;
+}

@@ -1,9 +1,9 @@
-// Card data: our own read-only queries against the schema. Only aggregates and taxonomy labels leave here —
-// never task text, never a trace's site (recipe cards show the recipe's site, which is public on /recipes).
+// Card data: our own read-only queries against the schema. Only aggregates and public task names leave here —
+// never task text (task names only once public; recipe cards show the recipe's site, which is public on /recipes).
 import type { Bindings } from '../env';
 import type { AwardId, AwardRow, RecipeRow, RecipeStatus, RecipeStep } from '../types';
 import { RULES } from '../lib/rules';
-import { taskType } from '../lib/taxonomy';
+import { agentBoard } from '../data/boards';
 import { DAY, WEEK, ago, dayOf, dayStart, isoWeek, weekLabel, weekNumber, weekStart } from '../lib/time';
 import { weeklyTrends } from '../processing/trends';
 import type { AgentCardData, AwardCardData, BoardCardData, BoardRow, RecipeCardData, Stat, TrendCardData } from './svg';
@@ -65,7 +65,11 @@ export async function agentCardData(env: Bindings, name: string, now = Date.now(
   const [totals, days, types] = await env.DB.batch([
     env.DB.prepare(`SELECT COUNT(*) AS n, COALESCE(SUM(t.outcome = 'done'), 0) AS done, COALESCE(SUM(${MINS_SQL}), 0) AS mins FROM traces t WHERE t.agent_id = ?`).bind(a.id),
     env.DB.prepare('SELECT day, COUNT(*) AS c FROM traces WHERE agent_id = ? GROUP BY day').bind(a.id),
-    env.DB.prepare("SELECT task_type, COUNT(*) AS n, COALESCE(SUM(outcome = 'done'), 0) AS done FROM traces WHERE agent_id = ? GROUP BY task_type").bind(a.id),
+    // Profile rules: only public, non-sensitive task names (the card carries the owner's handle).
+    env.DB.prepare(
+      `SELECT k.label, COUNT(*) AS n, COALESCE(SUM(t.outcome = 'done'), 0) AS done FROM traces t JOIN tasks k ON k.id = t.task_id
+       WHERE t.agent_id = ? AND k.crowd >= ? AND k.sensitive = 0 GROUP BY t.task_id ORDER BY n DESC LIMIT 3`,
+    ).bind(a.id, RULES.TASK_PUBLIC_MIN_CROWD),
   ]);
   const tot = (totals.results[0] ?? { n: 0, done: 0, mins: 0 }) as { n: number; done: number; mins: number };
   if (!tot.n) return base;
@@ -80,15 +84,8 @@ export async function agentCardData(env: Bindings, name: string, now = Date.now(
   });
   const st = streaks(dayRows.map(r => r.day), now);
 
-  const groups = new Map<string, { n: number; done: number }>();
-  for (const r of types.results as { task_type: string; n: number; done: number }[]) {
-    const label = taskType(r.task_type).trend;
-    const g = groups.get(label) ?? { n: 0, done: 0 };
-    g.n += r.n; g.done += r.done;
-    groups.set(label, g);
-  }
-  const bestAt = [...groups].sort((x, y) => y[1].n - x[1].n || y[1].done - x[1].done).slice(0, 3)
-    .map(([label, g]) => ({ label, tasks: g.n, pct: pct(g.done, g.n) }));
+  const bestAt = (types.results as { label: string; n: number; done: number }[])
+    .map(r => ({ label: r.label, tasks: r.n, pct: pct(r.done, r.n) }));
 
   return { ...base, isNew: false, tasks: tot.n, successPct: pct(tot.done, tot.n), minutes: tot.mins, streak: st.current, bestStreak: st.best, grid, bestAt };
 }
@@ -96,18 +93,19 @@ export async function agentCardData(env: Bindings, name: string, now = Date.now(
 // ---------------------------------------------------------------------------------------------
 // Award
 // ---------------------------------------------------------------------------------------------
-export const AWARD_IDS: AwardId[] = ['hardest_working', 'most_reliable_model', 'comeback', 'top_app', 'longest_streak'];
+export const AWARD_IDS: AwardId[] = ['most_shared', 'trendsetter', 'most_upvoted', 'most_reliable_model', 'top_app', 'longest_streak'];
 const AWARD_TITLE: Record<AwardId, string> = {
-  hardest_working: 'Hardest-working agent',
+  most_shared: 'Most traces shared',
+  trendsetter: 'Trend-setter of the week',
+  most_upvoted: 'Most upvoted',
   most_reliable_model: 'Most reliable model',
-  comeback: 'Comeback of the week',
   top_app: 'Highest success · agent app',
   longest_streak: 'Longest streak',
 };
 
 interface AwardDetail {
   seed?: boolean; model?: string; app?: string; tasks?: number; rate?: number; minutes?: number; agents?: number;
-  kind?: string; trend?: string; prev_rate?: number; gain?: number; streak?: number;
+  task_label?: string; trending?: number; upvotes?: number; recipes?: number; streak?: number;
 }
 
 export async function awardCardData(env: Bindings, week: string, award: AwardId): Promise<AwardCardData | null> {
@@ -131,9 +129,9 @@ export async function awardCardData(env: Bindings, week: string, award: AwardId)
   let stats: Stat[] = [];
   let qualifier: string | undefined;
   switch (award) {
-    case 'hardest_working':
+    case 'most_shared':
       stats = [
-        { value: fmtInt(tasks ?? row.value ?? 0), label: 'tasks in seven days', accent: true },
+        { value: fmtInt(tasks ?? row.value ?? 0), label: 'traces shared in seven days', accent: true },
         { value: r1(d.rate), unit: '%', label: 'success' },
         ...(d.minutes != null ? [{ value: fmtHours(d.minutes), label: 'worked' }] : []),
       ];
@@ -145,16 +143,24 @@ export async function awardCardData(env: Bindings, week: string, award: AwardId)
         { value: r1(d.rate), unit: '%', label: 'success' },
       ];
       break;
-    case 'comeback':
+    case 'trendsetter':
       stats = [
-        { value: r1(d.rate), unit: '%', label: 'success this week', accent: true },
-        { value: r1(d.prev_rate), unit: '%', label: 'the week before' },
-        ...(tasks != null ? [{ value: fmtInt(tasks), label: 'tasks this week' }] : []),
+        { value: fmtInt(d.trending ?? row.value ?? 0), label: 'traces on trending tasks', accent: true },
+        ...(tasks != null ? [{ value: fmtInt(tasks), label: 'shared this week' }] : []),
+        { value: r1(d.rate), unit: '%', label: 'success' },
+      ];
+      if (d.task_label) qualifier = `“${d.task_label}”`;
+      break;
+    case 'most_upvoted':
+      stats = [
+        { value: fmtInt(d.upvotes ?? row.value ?? 0), label: 'upvotes from other agents', accent: true },
+        { value: fmtInt(d.recipes ?? 0), label: d.recipes === 1 ? 'recipe followed' : 'recipes followed' },
+        ...(tasks ? [{ value: fmtInt(tasks), label: 'shared this week' }] : []),
       ];
       break;
     case 'most_reliable_model':
-      qualifier = (d.trend ?? d.kind)?.toLowerCase();
-      context = `${fmtInt(tasks ?? 0)} ${(d.kind ?? 'real').toLowerCase()} tasks from ${fmtInt(d.agents ?? 0)} different agents`;
+      qualifier = d.task_label ? `“${d.task_label}”` : undefined;
+      context = `${fmtInt(tasks ?? 0)} real tasks from ${fmtInt(d.agents ?? 0)} different agents`;
       stats = [
         { value: r1(d.rate ?? row.value), unit: '%', label: 'tasks done', accent: true },
         { value: fmtInt(tasks ?? 0), label: 'tasks' },
@@ -184,23 +190,20 @@ function fmtHours(min: number): string {
 // ---------------------------------------------------------------------------------------------
 // Leaderboard (top 5, current week by default)
 // ---------------------------------------------------------------------------------------------
-export type Board = 'agents' | 'models' | 'apps';
-export const BOARDS: Board[] = ['agents', 'models', 'apps'];
+export type Board = 'agents' | 'trending' | 'upvoted' | 'models' | 'apps';
+export const BOARDS: Board[] = ['agents', 'trending', 'upvoted', 'models', 'apps'];
 
 export async function boardCardData(env: Bindings, board: Board, week: string, now = Date.now()): Promise<BoardCardData> {
   const live = week === isoWeek(now);
   const total = await env.DB.prepare(`SELECT COUNT(*) AS n FROM traces t JOIN agents a ON a.id = t.agent_id WHERE t.week = ? AND ${ELIGIBLE}`)
     .bind(week).first<{ n: number }>();
   let rows: BoardRow[];
-  if (board === 'agents') {
-    const { results } = await env.DB.prepare(
-      `SELECT a.name, a.app, a.model, a.owner_handle, a.is_seed, COUNT(*) AS n, COALESCE(SUM(t.outcome = 'done'), 0) AS done
-       FROM traces t JOIN agents a ON a.id = t.agent_id WHERE t.week = ? AND ${ELIGIBLE}
-       GROUP BY t.agent_id HAVING n >= ? ORDER BY n DESC, done DESC LIMIT 5`,
-    ).bind(week, RULES.BOARD_MIN_TASKS_AGENT).all<{ name: string; app: string; model: string; owner_handle: string | null; is_seed: number; n: number; done: number }>();
-    rows = results.map((r, i) => ({
-      rank: i + 1, name: r.name, seed: !!r.is_seed, tasks: r.n, pct: pct(r.done, r.n), median: null,
-      sub: [r.app, r.model, r.is_seed ? 'Wisptrace' : handle(r.owner_handle)].filter(Boolean).join(' · '),
+  if (board === 'agents' || board === 'trending' || board === 'upvoted') {
+    const results = (await agentBoard(env, week, board)).slice(0, 5);
+    rows = results.map(r => ({
+      rank: r.rank, name: r.name, seed: r.is_seed, pct: Math.round(r.success), median: null,
+      tasks: board === 'trending' ? r.trending : board === 'upvoted' ? r.upvotes : r.tasks,
+      sub: [r.app, r.model, r.is_seed ? 'Wisptrace' : r.owner_handle].filter(Boolean).join(' · '),
     }));
   } else {
     const col = board === 'models' ? 't.model' : 't.app';
@@ -215,8 +218,12 @@ export async function boardCardData(env: Bindings, board: Board, week: string, n
     }));
   }
   const rule = board === 'agents'
-    ? `Agents need ${RULES.BOARD_MIN_TASKS_AGENT}+ tasks in a week to rank.`
-    : `A ${board === 'models' ? 'model' : 'agent app'} needs ${RULES.BOARD_MIN_AGENTS_GROUP}+ agents and ${RULES.BOARD_MIN_TASKS_GROUP}+ tasks in a week to rank.`;
+    ? `Agents need ${RULES.BOARD_MIN_TASKS_AGENT}+ traces in a week to rank.`
+    : board === 'trending'
+      ? 'Ranked by traces on the week’s trending tasks.'
+      : board === 'upvoted'
+        ? 'An upvote: another agent followed a recipe its traces built, and it worked.'
+        : `A ${board === 'models' ? 'model' : 'agent app'} needs ${RULES.BOARD_MIN_AGENTS_GROUP}+ agents and ${RULES.BOARD_MIN_TASKS_GROUP}+ tasks in a week to rank.`;
   const q = new URLSearchParams();
   if (board !== 'agents') q.set('board', board);
   if (!live) q.set('week', week);
@@ -230,29 +237,30 @@ export async function boardCardData(env: Bindings, board: Board, week: string, n
 // ---------------------------------------------------------------------------------------------
 // Trends
 // ---------------------------------------------------------------------------------------------
-export const lowerLabel = (s: string) => s.charAt(0).toLowerCase() + s.slice(1);
+/** A task name in running text: '“Cancel Netflix subscription”'. */
+export const quoted = (s: string) => `“${s}”`;
 
 export async function trendCardData(env: Bindings, week: string): Promise<TrendCardData> {
   const t = await weeklyTrends(env, { week });
   const enough = t.total_agents >= RULES.TREND_MIN_AGENTS;
   const footer = enough
-    ? `${fmtInt(t.total_traces)} traces from ${fmtInt(t.total_agents)} agents · groups need ${RULES.TREND_MIN_AGENTS}+ agents`
+    ? `${fmtInt(t.total_traces)} traces from ${fmtInt(t.total_agents)} agents · each task needs ${RULES.TREND_MIN_AGENTS}+ agents`
     : `Nothing is published below ${RULES.TREND_MIN_AGENTS} agents.`;
   const base = { weekLabel: `trends · ${weekKicker(week)}`, footer, url: `${displayHost(env)}/trends` };
   const top = t.movers[0];
   if (top && top.multiplier != null && top.multiplier >= 1.05) {
     return {
       ...base, mode: 'movers',
-      headline: [{ text: `Humans delegated ${lowerLabel(top.group)}` }, { text: `${top.multiplier.toFixed(1)}×`, accent: true }, { text: 'more than the week before.' }],
-      bars: t.movers.map(m => ({ label: m.group, mult: m.multiplier, traces: m.traces })),
+      headline: [{ text: `Humans delegated ${quoted(top.label)}` }, { text: `${top.multiplier.toFixed(1)}×`, accent: true }, { text: 'more than the week before.' }],
+      bars: t.movers.map(m => ({ label: m.label, mult: m.multiplier, traces: m.traces })),
     };
   }
-  const g = t.groups[0];
+  const g = t.tasks[0];
   if (g) {
     return {
       ...base, mode: 'volume',
-      headline: [{ text: `What humans delegated most in week ${weekNumber(week)}:` }, { text: `${lowerLabel(g.group)}.`, accent: true }],
-      bars: t.groups.map(x => ({ label: x.group, mult: x.multiplier, traces: x.traces })),
+      headline: [{ text: `What humans delegated most in week ${weekNumber(week)}:` }, { text: `${quoted(g.label)}.`, accent: true }],
+      bars: t.tasks.map(x => ({ label: x.label, mult: x.multiplier, traces: x.traces })),
     };
   }
   return { ...base, mode: 'movers', headline: null, bars: [] };
@@ -263,8 +271,10 @@ export async function trendCardData(env: Bindings, week: string): Promise<TrendC
 // ---------------------------------------------------------------------------------------------
 export async function recipeCardData(env: Bindings, site: string, slug: string, now = Date.now()): Promise<RecipeCardData | null> {
   const [r, policy] = await Promise.all([
-    env.DB.prepare("SELECT * FROM recipes WHERE site = ? AND slug = ? ORDER BY (status = 'superseded'), version DESC LIMIT 1")
-      .bind(site, slug).first<RecipeRow>(),
+    env.DB.prepare(
+      `SELECT r.* FROM recipes r JOIN tasks k ON k.id = r.task_id
+       WHERE r.site = ? AND k.slug = ? AND k.crowd >= ? ORDER BY (r.status = 'superseded'), r.version DESC LIMIT 1`,
+    ).bind(site, slug, RULES.TASK_PUBLIC_MIN_CROWD).first<RecipeRow>(),
     env.DB.prepare('SELECT policy FROM site_policies WHERE site = ?').bind(site).first<{ policy: string }>(),
   ]);
   if (!r) return null;
@@ -286,7 +296,7 @@ export async function recipeCardData(env: Bindings, site: string, slug: string, 
 // ---------------------------------------------------------------------------------------------
 // Week helpers used by the stat of the day
 // ---------------------------------------------------------------------------------------------
-export async function hardestWorking(env: Bindings, week: string) {
+export async function mostShared(env: Bindings, week: string) {
   return env.DB.prepare(
     `SELECT a.name, a.app, a.model, COUNT(*) AS n, COALESCE(SUM(t.outcome = 'done'), 0) AS done
      FROM traces t JOIN agents a ON a.id = t.agent_id WHERE t.week = ? AND ${ELIGIBLE} AND a.is_seed = 0
@@ -310,8 +320,8 @@ export async function tracesBefore(env: Bindings, before: number): Promise<numbe
 
 export async function newestTrustedRecipe(env: Bindings, before: number) {
   return env.DB.prepare(
-    `SELECT r.site, r.slug, r.task_type, r.title, r.agents_succeeded, r.median_steps, r.median_s FROM recipes r
-     LEFT JOIN site_policies p ON p.site = r.site
-     WHERE r.status = 'trusted' AND r.created_at < ? AND COALESCE(p.policy, '') != 'blocks' ORDER BY r.created_at DESC LIMIT 1`,
-  ).bind(before).first<{ site: string; slug: string; task_type: string; title: string; agents_succeeded: number; median_steps: number | null; median_s: number | null }>();
+    `SELECT r.site, r.slug, r.title, r.agents_succeeded, r.median_steps, r.median_s FROM recipes r
+     JOIN tasks k ON k.id = r.task_id LEFT JOIN site_policies p ON p.site = r.site
+     WHERE r.status = 'trusted' AND r.created_at < ? AND k.crowd >= ? AND COALESCE(p.policy, '') != 'blocks' ORDER BY r.created_at DESC LIMIT 1`,
+  ).bind(before, RULES.TASK_PUBLIC_MIN_CROWD).first<{ site: string; slug: string; title: string; agents_succeeded: number; median_steps: number | null; median_s: number | null }>();
 }

@@ -10,7 +10,7 @@ export function randomString(len: number, alphabet = B32): string {
   return out;
 }
 
-export const newId = (prefix: 'ag' | 'tr' | 'rc') => `${prefix}_${randomString(20)}`;
+export const newId = (prefix: 'ag' | 'tr' | 'rc' | 'tk') => `${prefix}_${randomString(20)}`;
 export const newApiKey = () => `wt_${randomString(40, B62)}`;
 export const newOwnerToken = () => `wto_${randomString(40, B62)}`;
 

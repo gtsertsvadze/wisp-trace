@@ -1,82 +1,59 @@
-// Trends: daily totals per task type and weekly movers per taxonomy trend group, with k-anonymity.
-// Only claimed (or seed), non-deleted agents count.
+// Trends: weekly totals per specific task, with k-anonymity, week-over-week multipliers and "trending" flags.
+// Only claimed (or seed), non-deleted agents count, and only tasks whose name is public.
 import type { Bindings } from '../env';
-import type { TrendGroupWeek, WeeklyTrends } from '../types';
+import type { TrendTaskWeek, WeeklyTrends } from '../types';
 import { RULES } from '../lib/rules';
-import { TREND_GROUPS, typesInTrend } from '../lib/taxonomy';
 import { DAY, dayOf, lastCompleteWeek, MIN, shiftWeek } from '../lib/time';
 import { cached } from './snapshots';
 
 const ELIGIBLE = "a.deleted_at IS NULL AND (a.claim_status = 'claimed' OR a.is_seed = 1)";
+const MAX_TASKS = 200; // the snapshot keeps the biggest tasks plus every trending one
 
-/** Rebuild daily_task_stats from traces for the last `days` days (today included). Returns rows written. */
-export async function rebuildDailyStats(env: Bindings, opts: { now?: number; days?: number } = {}): Promise<number> {
-  const now = opts.now ?? Date.now();
-  const from = dayOf(now - ((opts.days ?? 16) - 1) * DAY);
-  const to = dayOf(now);
-  const [, ins] = await env.DB.batch([
-    env.DB.prepare('DELETE FROM daily_task_stats WHERE day >= ? AND day <= ?').bind(from, to),
+interface WeekTask { task_id: string; slug: string; label: string; traces: number; agents: number }
+
+async function weekByTask(env: Bindings, week: string): Promise<{ tasks: Map<string, WeekTask>; traces: number; agents: number }> {
+  const [byTask, tot] = await env.DB.batch([
     env.DB.prepare(
-      `INSERT INTO daily_task_stats (day, task_type, traces, agents, done)
-       SELECT t.day, t.task_type, COUNT(*), COUNT(DISTINCT t.agent_id), SUM(CASE WHEN t.outcome = 'done' THEN 1 ELSE 0 END)
-       FROM traces t JOIN agents a ON a.id = t.agent_id
-       WHERE t.day >= ? AND t.day <= ? AND ${ELIGIBLE}
-       GROUP BY t.day, t.task_type`,
-    ).bind(from, to),
+      `SELECT t.task_id, k.slug, k.label, COUNT(*) AS traces, COUNT(DISTINCT t.agent_id) AS agents
+       FROM traces t JOIN agents a ON a.id = t.agent_id JOIN tasks k ON k.id = t.task_id
+       WHERE t.week = ? AND ${ELIGIBLE} AND k.crowd >= ?
+       GROUP BY t.task_id HAVING agents >= ?`,
+    ).bind(week, RULES.TASK_PUBLIC_MIN_CROWD, RULES.TREND_MIN_AGENTS),
+    env.DB.prepare(
+      `SELECT COUNT(*) AS n, COUNT(DISTINCT t.agent_id) AS ag FROM traces t JOIN agents a ON a.id = t.agent_id WHERE t.week = ? AND ${ELIGIBLE}`,
+    ).bind(week),
   ]);
-  return ins.meta.changes ?? 0;
-}
-
-interface WeekGroup { traces: number; agents: Set<string> }
-
-async function weekByGroup(env: Bindings, week: string): Promise<{ groups: Map<string, WeekGroup>; traces: number; agents: Set<string> }> {
-  // Distinct agents can't be summed across types or days, so aggregate (type, agent) pairs here.
-  const { results } = await env.DB.prepare(
-    `SELECT t.task_type, t.agent_id, COUNT(*) AS n FROM traces t JOIN agents a ON a.id = t.agent_id
-     WHERE t.week = ? AND ${ELIGIBLE} GROUP BY t.task_type, t.agent_id`,
-  ).bind(week).all<{ task_type: string; agent_id: string; n: number }>();
-  const typeToGroup = new Map<string, string>();
-  for (const g of TREND_GROUPS) for (const id of typesInTrend(g)) typeToGroup.set(id, g);
-  const groups = new Map<string, WeekGroup>();
-  const agents = new Set<string>();
-  let traces = 0;
-  for (const r of results) {
-    const g = typeToGroup.get(r.task_type) ?? typeToGroup.get('other')!;
-    const wg = groups.get(g) ?? { traces: 0, agents: new Set<string>() };
-    wg.traces += r.n;
-    wg.agents.add(r.agent_id);
-    groups.set(g, wg);
-    agents.add(r.agent_id);
-    traces += r.n;
-  }
-  return { groups, traces, agents };
+  const tasks = new Map((byTask.results as WeekTask[]).map(r => [r.task_id, r]));
+  const t = (tot.results[0] ?? { n: 0, ag: 0 }) as { n: number; ag: number };
+  return { tasks, traces: t.n, agents: t.ag };
 }
 
 async function compute(env: Bindings, week: string, now: number): Promise<WeeklyTrends> {
   const prevWeek = shiftWeek(week, -1);
-  const [cur, prev] = await Promise.all([weekByGroup(env, week), weekByGroup(env, prevWeek)]);
+  const [cur, prev] = await Promise.all([weekByTask(env, week), weekByTask(env, prevWeek)]);
   const k = RULES.TREND_MIN_AGENTS;
 
-  const all: TrendGroupWeek[] = TREND_GROUPS.map(group => {
-    const c = cur.groups.get(group);
-    const p = prev.groups.get(group);
-    const agents = c?.agents.size ?? 0;
-    const prevAgents = p?.agents.size ?? 0;
-    const prevPublished = prevAgents >= k;
-    const prevTraces = prevPublished ? p!.traces : 0; // never expose a number from fewer than k agents
+  // Every task in `cur` already passed k-anonymity; last week's number is used only if it passed too.
+  const all: TrendTaskWeek[] = [...cur.tasks.values()].map(c => {
+    const p = prev.tasks.get(c.task_id);
     return {
-      group,
-      types: typesInTrend(group),
-      traces: c?.traces ?? 0,
-      agents,
-      prev_traces: prevTraces,
-      prev_agents: prevPublished ? prevAgents : 0,
-      multiplier: prevPublished && prevTraces > 0 ? Math.round(((c?.traces ?? 0) / prevTraces) * 100) / 100 : null,
-      published: agents >= k,
+      task_id: c.task_id,
+      slug: c.slug,
+      label: c.label,
+      traces: c.traces,
+      agents: c.agents,
+      prev_traces: p?.traces ?? 0,
+      prev_agents: p?.agents ?? 0,
+      multiplier: p && p.traces > 0 ? Math.round((c.traces / p.traces) * 100) / 100 : null,
+      published: true,
+      trending: false,
     };
+  }).sort((a, b) => b.traces - a.traces || a.label.localeCompare(b.label));
+  all.forEach((t, i) => {
+    t.trending = i < RULES.TRENDING_TOP || (t.multiplier ?? 0) >= RULES.TRENDING_MIN_MULTIPLIER;
   });
-  const groups = all.filter(g => g.published).sort((a, b) => b.traces - a.traces);
-  const movers = groups.filter(g => g.multiplier !== null).sort((a, b) => b.multiplier! - a.multiplier! || b.traces - a.traces);
+  const tasks = all.filter((t, i) => i < MAX_TASKS || t.trending);
+  const movers = tasks.filter(t => t.multiplier !== null).sort((a, b) => b.multiplier! - a.multiplier! || b.traces - a.traces).slice(0, 50);
 
   // Last 14 days ending yesterday.
   const yesterday = now - DAY;
@@ -95,15 +72,15 @@ async function compute(env: Bindings, week: string, now: number): Promise<Weekly
     daily.push({ day, traces: published ? r!.traces : 0, agents: published ? r!.agents : 0, published });
   }
 
-  const totalPublished = cur.agents.size >= k;
+  const totalPublished = cur.agents >= k;
   return {
     week,
     prev_week: prevWeek,
-    groups,
+    tasks,
     movers,
     daily,
     total_traces: totalPublished ? cur.traces : 0,
-    total_agents: totalPublished ? cur.agents.size : 0,
+    total_agents: totalPublished ? cur.agents : 0,
     computed_at: now,
   };
 }
@@ -113,4 +90,10 @@ export async function weeklyTrends(env: Bindings, opts: { week?: string; now?: n
   const now = opts.now ?? Date.now();
   const week = opts.week ?? lastCompleteWeek(now);
   return cached(env, `trends:${week}`, 10 * MIN, () => compute(env, week, now));
+}
+
+/** Ids of the week's trending tasks (top by volume, or fast growers). Leaderboards and awards credit traces on them. */
+export async function trendingTaskIds(env: Bindings, week: string, now = Date.now()): Promise<Set<string>> {
+  const t = await weeklyTrends(env, { week, now });
+  return new Set(t.tasks.filter(x => x.trending).map(x => x.task_id));
 }

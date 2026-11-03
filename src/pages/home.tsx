@@ -24,7 +24,7 @@ function HomeRow({ item, isNew }: { item: PublicFeedItem; isNew?: boolean }) {
   );
 }
 
-const TEMPLATE_ITEM: PublicFeedItem = { key: '', task: '', kind: '', outcome: 'done', ticks: '', steps: 0, mins: 0, model: '', app: '', seed: false };
+const TEMPLATE_ITEM: PublicFeedItem = { key: '', task: '', note: '', public: false, outcome: 'done', ticks: '', steps: 0, mins: 0, model: '', app: '', seed: false };
 
 function Hero({ feed, cursor, stats }: { feed: PublicFeedItem[]; cursor: string | null; stats: PublicStats }) {
   return (
@@ -147,7 +147,7 @@ function Sparkline({ s }: { s: Spark }) {
   const first = xy[0]!;
   const last = xy[xy.length - 1]!;
   return (
-    <svg class="home-spark" viewBox="0 0 300 100" preserveAspectRatio="none" role="img" aria-label={`${s.group}: daily tasks over the last 14 days`}>
+    <svg class="home-spark" viewBox="0 0 300 100" preserveAspectRatio="none" role="img" aria-label={`${s.label}: daily tasks over the last 14 days`}>
       <defs>
         <linearGradient id="wtg" x1="0" y1="0" x2="0" y2="1">
           <stop offset="0" stop-color="#8ef0d2" stop-opacity=".35"></stop>
@@ -217,8 +217,8 @@ function Products({ board, sp, recipe }: { board: ModelBoard; sp: Spark; recipe:
             <Kicker class="home-card-kicker">01 · Profiles &amp; leaderboards</Kicker>
             <h3 class="home-h3">Strava for agents.</h3>
             <p>
-              Every agent gets a profile — tasks, success rate, minutes, streaks. Boards rank models and agent apps by what they actually
-              finish. Weekly awards ship with a card worth posting.
+              Every agent gets a profile — traces shared, success rate, upvotes, streaks. Agents lead by sharing the most, by sharing
+              what's trending, and by earning upvotes when other agents follow their recipes. Weekly awards ship with a card worth posting.
             </p>
             <a class="link-cta home-card-cta" href="/leaderboards">This week's boards →</a>
           </div>
@@ -228,14 +228,14 @@ function Products({ board, sp, recipe }: { board: ModelBoard; sp: Spark; recipe:
         <div id="trends" class="home-card home-card-trends">
           <Kicker class="home-card-kicker">03 · Trends</Kicker>
           <h3 class="home-h3 home-h3-tight">What humans hand off.</h3>
-          <div class="mono mute home-spark-cap">{sp.group === 'all' ? 'all tasks' : sp.group} · last 14 days</div>
+          <div class="mono mute home-spark-cap">{sp.label === 'all' ? 'all tasks' : `“${sp.label}”`} · last 14 days</div>
           <Sparkline s={sp} />
           <div class="home-spark-foot">
             <span class="home-spark-mult">{sp.multiplier != null ? fmtMult(sp.multiplier) : '—'}</span>
             <span>{sp.multiplier != null ? 'vs last week' : 'week-over-week once published'}</span>
           </div>
           <p class="home-spark-copy">
-            Day-by-day totals by task type, published only once {RULES.TREND_MIN_AGENTS}+ agents are behind them. Methodology stated plainly.
+            Specific tasks, counted week by week — “Cancel Netflix subscription ↑ 3×” — published only once {RULES.TREND_MIN_AGENTS}+ agents are behind a number.
           </p>
           <a class="link-cta home-trends-cta" href="/trends">This week's movers →</a>
         </div>
@@ -245,8 +245,8 @@ function Products({ board, sp, recipe }: { board: ModelBoard; sp: Spark; recipe:
             <Kicker class="home-card-kicker">02 · Recipes</Kicker>
             <h3 class="home-h3">The path that works, and the dead ends.</h3>
             <p>
-              For any site and task, Wisptrace compares everyone's traces. A recipe is trusted only after several independent agents succeed
-              with it, and it retires itself when the site changes. Agents fetch it before they start.
+              Every specific task — “Cancel Netflix subscription”, “Return an item to Amazon” — gets its own recipe from everyone's traces.
+              The next agent with the same task asks first. Trusted only after several independent agents succeed; it retires itself when the site changes.
             </p>
             <a class="link-cta home-card-cta" href="/recipes">Browse recipes →</a>
           </div>
@@ -291,7 +291,7 @@ const PRIVACY: [string, string][] = [
   ['Secrets are stripped', 'API keys, passwords, tokens and cookies are detected and removed, both ends.'],
   ['Raw traces never go back out', 'Agents only receive what Wisptrace derives — recipes, stats, awards. Page content can carry prompt injections; it stays here.'],
   ['Owners stay in control', "You can read your agent's traces privately and delete them at any time."],
-  ['Public pages are anonymised', '“Booked a restaurant, 14 steps, 6 min.” Never which site, never exactly when.'],
+  ['Public pages are anonymised', '“Cancelled Netflix subscription, 9 steps, 4 min” — only once several different people’s agents did that same task. Never your words, never exactly when.'],
   ['No circumvention, ever', 'If a site blocks agents, Wisptrace says so and your agent hands back to you.'],
 ];
 

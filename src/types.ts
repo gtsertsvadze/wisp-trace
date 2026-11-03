@@ -1,4 +1,4 @@
-// Shared domain types. Row types mirror migrations/0001_init.sql exactly.
+// Shared domain types. Row types mirror migrations/0001_init.sql + 0003_specific_tasks.sql exactly.
 
 export type Outcome = 'done' | 'handed_back' | 'failed';
 export type StepResult = 'ok' | 'retry' | 'fail';
@@ -9,11 +9,13 @@ export type Sensitive = 'credentials' | 'payment' | 'personal';
 export type RecipeStatus = 'forming' | 'trusted' | 'outdated' | 'superseded' | 'blocked';
 export type SitePolicy = 'allows' | 'blocks' | 'unknown';
 export type AwardId =
-  | 'hardest_working'      // agent with most tasks this week
-  | 'most_reliable_model'  // model with best success rate on the week's top task kind
-  | 'comeback'             // agent with the biggest success-rate gain vs previous week
+  | 'most_shared'          // agent that shared the most traces this week
+  | 'trendsetter'          // agent with the most traces on this week's trending tasks
+  | 'most_upvoted'         // agent whose recipes earned the most upvotes (other agents followed them and succeeded)
+  | 'most_reliable_model'  // model with the best success rate on the week's most delegated task
   | 'top_app'              // agent app with highest success rate
   | 'longest_streak';      // agent with the longest active streak
+export type TaskSource = 'agent' | 'llm' | 'heuristic';
 
 // ---------------------------------------------------------------------------
 // Wire format: what the skill client POSTs to /api/v1/traces (already masked on the agent).
@@ -42,8 +44,9 @@ export interface TraceV1 {
   client?: { name?: string; version?: string; masked?: boolean; mask_counts?: Record<string, number> };
   task: {
     description: string;        // masked task description
+    tag?: string;               // the task's name, as any agent doing the same thing would say it:
+                                // verb + service + object, no personal details. 'Cancel Netflix subscription'
     sites?: string[];           // domains or URLs involved
-    type_hint?: string;         // optional taxonomy id suggested by the agent
   };
   agent?: { app?: string; app_version?: string; model?: string };
   started_at?: string;          // ISO 8601
@@ -94,8 +97,8 @@ export interface TraceRow {
   occurred_at: number;
   day: string;
   week: string;
-  task_type: string;
-  task_kind: string;
+  task_id: string;
+  task_source: TaskSource;
   task_text: string | null;
   site: string | null;
   sites_json: string | null;
@@ -114,23 +117,27 @@ export interface TraceRow {
   raw_bytes: number | null;
   mask_client: number;
   mask_server: number;
-  classifier: 'heuristic' | 'llm' | 'hint';
   feed_visible_at: number;
   is_seed: number;
-  processed_at: number | null;
 }
 
-export interface TraceStepRow {
-  trace_id: string;
-  idx: number;
-  type: StepType;
-  action: string;
-  target: string | null;
-  path: string | null;
-  result: StepResult;
-  error: string | null;
-  sig: string;
-  sensitive: Sensitive | null;
+/** A specific task, e.g. 'Cancel Netflix subscription'. The name is public only when crowd >= RULES.TASK_PUBLIC_MIN_CROWD. */
+export interface TaskRow {
+  id: string;
+  key: string;
+  slug: string;
+  label: string;
+  done_label: string;
+  label_source: TaskSource;
+  verb: string;
+  words: string;
+  brand: string;
+  site: string | null;
+  sensitive: number;
+  crowd: number;
+  traces: number;
+  first_seen_at: number;
+  last_seen_at: number;
 }
 
 /** One step of a published recipe. `text`/`note` have passed src/lib/sanitize.ts. */
@@ -153,8 +160,8 @@ export interface DeadEnd {
 
 export interface RecipeRow {
   id: string;
+  task_id: string;
   site: string;
-  task_type: string;
   slug: string;
   title: string;
   version: number;
@@ -199,11 +206,12 @@ export interface AwardRow {
 // ---------------------------------------------------------------------------
 // Public, anonymised shapes (the only trace-derived data public pages / public JSON may expose)
 // ---------------------------------------------------------------------------
-/** A public feed item. No site, no task text, no timestamps, no agent id. */
+/** A public feed item. No task text, no URLs, no timestamps, no agent id. */
 export interface PublicFeedItem {
   key: string;            // opaque, NOT the trace id: hash(trace id + salt) truncated
-  task: string;           // taxonomy label, e.g. 'Booked a restaurant'
-  kind: string;           // taxonomy kind, e.g. 'Bookings'
+  task: string;           // 'Cancelled Netflix subscription' once public, else 'Cancelled something'
+  note: string;           // "14 people's agents did this" / "name stays private until 3 people's agents do it"
+  public: boolean;        // the task name is public
   outcome: Outcome;
   ticks: string;          // 'o' | 'r' | 'f' per step
   steps: number;
@@ -222,28 +230,31 @@ export interface PublicStats {
   week_success_rate: number; // 0-100
   recipes_trusted: number;
   recipes_forming: number;
+  tasks_public: number;    // specific tasks whose name is public
   top_mover?: { label: string; multiplier: number } | null;
 }
 
 // ---------------------------------------------------------------------------
 // Weekly trends (computed by src/processing/trends.ts, read by the trends page, cards and stat of the day)
 // ---------------------------------------------------------------------------
-export interface TrendGroupWeek {
-  group: string;            // taxonomy trend label, e.g. 'Gift shopping'
-  types: string[];          // taxonomy ids in the group
+export interface TrendTaskWeek {
+  task_id: string;
+  slug: string;
+  label: string;            // public task name, e.g. 'Cancel Netflix subscription'
   traces: number;
   agents: number;           // distinct agents this week
   prev_traces: number;
   prev_agents: number;
   multiplier: number | null; // traces / prev_traces, null when prev isn't published or is 0
   published: boolean;       // agents >= RULES.TREND_MIN_AGENTS (k-anonymity)
+  trending: boolean;        // in the week's top RULES.TRENDING_TOP by volume, or grew >= RULES.TRENDING_MIN_MULTIPLIER
 }
 
 export interface WeeklyTrends {
   week: string;             // the (complete) week being reported, e.g. '2026-W44'
   prev_week: string;
-  groups: TrendGroupWeek[]; // published groups only, by traces desc
-  movers: TrendGroupWeek[]; // published groups with a multiplier, by multiplier desc
+  tasks: TrendTaskWeek[];   // published tasks only, by traces desc
+  movers: TrendTaskWeek[];  // published tasks with a multiplier, by multiplier desc
   daily: { day: string; traces: number; agents: number; published: boolean }[]; // last 14 days ending yesterday
   total_traces: number;
   total_agents: number;

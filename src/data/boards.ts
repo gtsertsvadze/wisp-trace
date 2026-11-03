@@ -1,14 +1,20 @@
 // Leaderboard data (UI-2). Read-only aggregates over `traces` joined to eligible agents; everything heavier
 // than a single lookup is cached 60 s in `snapshots`. Only aggregates and agent handles leave here.
+// Agents lead three ways: most traces shared, most traces on the week's trending tasks, most upvotes earned
+// (other agents followed a recipe their traces built, and it worked).
 import type { Bindings } from '../env';
 import type { AwardId, AwardRow } from '../types';
 import { RULES } from '../lib/rules';
+import { upvotesByAgent } from '../processing/awards';
 import { cached } from '../processing/snapshots';
+import { trendingTaskIds } from '../processing/trends';
 import { isoWeek, lastCompleteWeek, shiftWeek, weekStart } from '../lib/time';
 
-export type Board = 'agents' | 'models' | 'apps';
-export const BOARDS: Board[] = ['agents', 'models', 'apps'];
+export type Board = 'agents' | 'trending' | 'upvoted' | 'models' | 'apps';
+export type AgentBoard = 'agents' | 'trending' | 'upvoted';
+export const BOARDS: Board[] = ['agents', 'trending', 'upvoted', 'models', 'apps'];
 export const isBoard = (s: unknown): s is Board => typeof s === 'string' && (BOARDS as string[]).includes(s);
+export const isAgentBoard = (b: Board): b is AgentBoard => b === 'agents' || b === 'trending' || b === 'upvoted';
 export const isWeek = (s: unknown): s is string => typeof s === 'string' && /^\d{4}-W(0[1-9]|[1-4]\d|5[0-3])$/.test(s);
 
 const CACHE_MS = 60_000;
@@ -22,9 +28,11 @@ export interface AgentBoardRow {
   model: string;               // most used that week
   owner_handle: string | null; // '@mira'; null for seed agents
   is_seed: boolean;
-  tasks: number;
+  tasks: number;               // traces shared this week
   success: number;             // 0-100, one decimal
   median_minutes: number;
+  trending: number;            // traces on the week's trending tasks
+  upvotes: number;             // upvotes earned this week
 }
 
 export interface GroupBoardRow {
@@ -60,9 +68,10 @@ export interface AwardDetail {
   prev_rate?: number;
   prev_tasks?: number;
   gain?: number;
-  kind?: string;
-  trend?: string;
-  type_label?: string;
+  task_label?: string;
+  trending?: number;
+  upvotes?: number;
+  recipes?: number;
   streak?: number;
   agents?: number;
   app?: string;
@@ -87,14 +96,18 @@ function medianSql(groupCol: string, extraWhere = ''): string {
     SELECT k, AVG(mins) AS median FROM r WHERE rn IN ((cnt + 1) / 2, (cnt + 2) / 2) GROUP BY k`;
 }
 
-export function agentBoard(env: Bindings, week: string): Promise<AgentBoardRow[]> {
-  return cached(env, `board:agents:${week}`, CACHE_MS, async () => {
+/** Every eligible agent active (or upvoted) in the week, unranked. Shared by the three agent boards. */
+function agentWeek(env: Bindings, week: string): Promise<Omit<AgentBoardRow, 'rank'>[]> {
+  return cached(env, `board:agent-week:${week}`, CACHE_MS, async () => {
+    const trending = [...await trendingTaskIds(env, week)].slice(0, 80);
+    const trendSql = trending.length ? `COALESCE(SUM(t.task_id IN (${trending.map(() => '?').join(',')})), 0)` : '0';
     const [agg, med, models] = await env.DB.batch([
       env.DB.prepare(
-        `SELECT t.agent_id, a.name, a.app, a.owner_handle, a.is_seed, COUNT(*) AS n, COALESCE(SUM(t.outcome = 'done'), 0) AS done
+        `SELECT t.agent_id, a.name, a.app, a.owner_handle, a.is_seed, COUNT(*) AS n, COALESCE(SUM(t.outcome = 'done'), 0) AS done,
+                ${trendSql} AS trending
          FROM traces t JOIN agents a ON a.id = t.agent_id WHERE t.week = ? AND ${ELIGIBLE}
-         GROUP BY t.agent_id HAVING n >= ? ORDER BY n DESC, done DESC, a.name ASC LIMIT 100`,
-      ).bind(week, RULES.BOARD_MIN_TASKS_AGENT),
+         GROUP BY t.agent_id ORDER BY n DESC LIMIT 1000`,
+      ).bind(...trending, week),
       env.DB.prepare(medianSql('t.agent_id')).bind(week),
       env.DB.prepare(
         `SELECT t.agent_id, t.model, COUNT(*) AS n FROM traces t JOIN agents a ON a.id = t.agent_id
@@ -106,19 +119,47 @@ export function agentBoard(env: Bindings, week: string): Promise<AgentBoardRow[]
     for (const r of models.results as { agent_id: string; model: string; n: number }[]) {
       if (!topModel.has(r.agent_id)) topModel.set(r.agent_id, r.model); // ordered by n desc
     }
-    return (agg.results as { agent_id: string; name: string; app: string; owner_handle: string | null; is_seed: number; n: number; done: number }[])
-      .map((r, i) => ({
-        rank: i + 1,
-        name: r.name,
-        app: r.app,
-        model: topModel.get(r.agent_id) ?? 'unknown',
-        owner_handle: r.is_seed ? null : handle(r.owner_handle),
-        is_seed: !!r.is_seed,
-        tasks: r.n,
-        success: pct1(r.done, r.n),
-        median_minutes: Math.round((medians.get(r.agent_id) ?? 1) * 10) / 10,
-      }));
+    const ups = await upvotesByAgent(env, week);
+    type AggRow = { agent_id: string; name: string; app: string; owner_handle: string | null; is_seed: number; n: number; done: number; trending: number };
+    const rows = agg.results as AggRow[];
+    const seen = new Set(rows.map(r => r.agent_id));
+    const missing = [...ups.keys()].filter(id => !seen.has(id)).slice(0, 90);
+    if (missing.length) {
+      // Upvoted this week without sharing anything this week: still on the upvote board.
+      const { results } = await env.DB.prepare(
+        `SELECT a.id AS agent_id, a.name, a.app, a.model, a.owner_handle, a.is_seed FROM agents a
+         WHERE a.id IN (${missing.map(() => '?').join(',')}) AND ${ELIGIBLE}`,
+      ).bind(...missing).all<Omit<AggRow, 'n' | 'done' | 'trending'> & { model: string }>();
+      for (const r of results) {
+        rows.push({ ...r, n: 0, done: 0, trending: 0 });
+        topModel.set(r.agent_id, r.model);
+      }
+    }
+    return rows.map(r => ({
+      name: r.name,
+      app: r.app,
+      model: topModel.get(r.agent_id) ?? 'unknown',
+      owner_handle: r.is_seed ? null : handle(r.owner_handle),
+      is_seed: !!r.is_seed,
+      tasks: r.n,
+      success: pct1(r.done, r.n),
+      median_minutes: Math.round((medians.get(r.agent_id) ?? 1) * 10) / 10,
+      trending: r.trending,
+      upvotes: ups.get(r.agent_id)?.upvotes ?? 0,
+    }));
   });
+}
+
+/** One agent board, ranked: 'agents' = most shared, 'trending' = most on trending tasks, 'upvoted' = most upvotes. */
+export async function agentBoard(env: Bindings, week: string, board: AgentBoard = 'agents'): Promise<AgentBoardRow[]> {
+  const all = await agentWeek(env, week);
+  const byName = (a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name);
+  const rows = board === 'trending'
+    ? all.filter(r => r.trending > 0).sort((a, b) => b.trending - a.trending || b.tasks - a.tasks || byName(a, b))
+    : board === 'upvoted'
+      ? all.filter(r => r.upvotes > 0).sort((a, b) => b.upvotes - a.upvotes || b.tasks - a.tasks || byName(a, b))
+      : all.filter(r => r.tasks >= RULES.BOARD_MIN_TASKS_AGENT).sort((a, b) => b.tasks - a.tasks || b.success - a.success || byName(a, b));
+  return rows.slice(0, 100).map((r, i) => ({ rank: i + 1, ...r }));
 }
 
 async function groupBoard(env: Bindings, week: string, col: 't.model' | 't.app'): Promise<GroupBoardRow[]> {
@@ -187,7 +228,7 @@ function normaliseDetail(json: string): AwardDetail {
   const ru = raw.runner_up as { model?: unknown; rate?: unknown } | null | undefined;
   return {
     tasks: num('tasks'), rate: num('rate'), minutes: num('minutes'), prev_rate: num('prev_rate'), prev_tasks: num('prev_tasks'),
-    gain: num('gain'), kind: str('kind') ?? str('label'), trend: str('trend') ?? str('group'), type_label: str('type_label'),
+    gain: num('gain'), task_label: str('task_label'), trending: num('trending'), upvotes: num('upvotes'), recipes: num('recipes'),
     streak: num('streak') ?? num('streak_days'), agents: num('agents'), app: str('app'), model: str('model'),
     owner_handle: str('owner_handle'), week_label: str('week_label'), seed: raw.seed === true,
     runner_up: ru && typeof ru.model === 'string' && typeof ru.rate === 'number' ? { model: ru.model, rate: ru.rate } : null,

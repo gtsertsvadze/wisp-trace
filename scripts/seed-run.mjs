@@ -300,12 +300,40 @@ const H = {
 };
 
 // ------------------------------------------------------------------ run + send
+const apiKey = DRY ? null : JSON.parse(readFileSync(join(fleetDir, 'credentials.json'), 'utf8')).api_key;
+
+/** Like any agent running the skill: ask Wisptrace for the recipe first. A site marked "blocks" is never contacted. */
+async function lookup(run, task) {
+  if (!apiKey) return { blocked: false, recipeId: null };
+  try {
+    const q = site => fetch(`https://wisptrace.com/api/v1/recipes?task=${encodeURIComponent(task.tag)}${site ? `&site=${encodeURIComponent(site)}` : ''}`,
+      { headers: { authorization: `Bearer ${apiKey}`, 'user-agent': UA }, signal: AbortSignal.timeout(15000) });
+    let r = await q(task.site);
+    if (r.status === 400) r = await q(null); // e.g. 'gov.uk' is a public suffix, not a site: look up by task only
+    const d = await r.json();
+    const recipe = d.recipes?.[0] ?? null;
+    const blocked = d.site_policy?.policy === 'blocks';
+    run.step('tool', 'Asked Wisptrace for the recipe before starting', {
+      observation: blocked ? 'Site policy: blocks agents' : recipe ? `Recipe found (${recipe.status}, ${recipe.agents_succeeded} people)` : 'No recipe yet',
+      model_response: blocked ? 'The site does not allow agents, so I will not start; handing back.' : undefined,
+    });
+    return { blocked, recipeId: recipe?.id ?? null };
+  } catch {
+    return { blocked: false, recipeId: null };
+  }
+}
+
 const summary = [];
 for (const task of tasks) {
   const run = new Run(task);
   let res;
+  let recipeId = null;
   try {
-    res = H[task.id] ? await H[task.id](run) : run.handBack('No runner for this task yet.');
+    const pre = await lookup(run, task);
+    recipeId = pre.recipeId;
+    res = pre.blocked
+      ? run.handBack(`Wisptrace lists ${task.site} as a site that does not allow agents, so I didn't start. Handing back.`, true)
+      : H[task.id] ? await H[task.id](run) : run.handBack('No runner for this task yet.');
   } catch (e) {
     run.step('other', 'The request failed', { result: 'fail', error: String(e.message || e).slice(0, 200) });
     res = run.failed(`Network error: ${String(e.message || e).slice(0, 120)}`);
@@ -321,6 +349,8 @@ for (const task of tasks) {
     outcome: res.outcome,
     steps: run.steps.map(s => Object.fromEntries(Object.entries(s).filter(([, v]) => v !== undefined))),
     messages: [{ role: 'user', content: task.prompt }, { role: 'assistant', content: res.answer }],
+    // Followed (or tried) an existing recipe: the trace is evidence for it either way. Seeds never upvote.
+    ...(recipeId && res.outcome.status !== 'handed_back' ? { recipe_id: recipeId } : {}),
   };
   const file = join(outDir, `task-${task.id}.json`);
   writeFileSync(file, JSON.stringify(trace, null, 2));

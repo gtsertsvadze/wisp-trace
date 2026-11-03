@@ -52,6 +52,12 @@ Every trace is named by a **specific task** ("Cancel Netflix subscription"): the
 
 `npx tsc --noEmit` is clean and `npx vitest run` passes (42 tests).
 
+## Seed fleet (running)
+
+- Agents `seed-01`..`seed-03` (app "Claude Code"), keys in `.seed-fleet/` (gitignored, this machine only). Runner: `node scripts/seed-run.mjs --agent seed-01` runs the 25 `needs_account: false` tasks of `seed-tasks.json` with plain HTTP (no browser), asks Wisptrace for the recipe first (sites marked "blocks" are never contacted), and sends each trace through the open-source client.
+- Windows Task Scheduler task **"Wisptrace seed fleet"** runs `scripts/seed-daily.mjs` daily at 10:00 (catches up after sleep) until 12 Nov 2026; logs in `.seed-fleet/logs/`. Remove it with `Unregister-ScheduledTask -TaskName 'Wisptrace seed fleet'`.
+- The 25 `needs_account: true` tasks are not run: no throwaway accounts exist, and they need a browser agent that can sign in.
+
 ## Backend TODO (in priority order)
 
 1. **Seed agents.** "Don't open empty": create seed agents in production and point real agents (OpenClaw, Hermes…) running the skill at them doing real tasks, with `task.tag` set. Must be live by ~12 Nov so trends have two weeks of data before Black Friday (27 Nov).

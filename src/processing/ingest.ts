@@ -6,6 +6,7 @@ import type { AgentRow, Outcome, Sensitive, StepResult, StepType, TraceStepRow }
 import { AGENT_TEXT } from '../lib/agent-text';
 import { newId } from '../lib/ids';
 import { maskDeep, maskUrl } from '../lib/mask';
+import { deleteRaw, putRaw } from '../lib/rawstore';
 import { normalizeApp, normalizeModel, registrableDomain } from '../lib/normalize';
 import { hit } from '../lib/ratelimit';
 import { RULES } from '../lib/rules';
@@ -387,11 +388,11 @@ export async function ingestTrace(
   const cost = tr.usage?.cost_usd != null && tr.usage.cost_usd >= 0 && tr.usage.cost_usd < 10_000
     ? Math.round(tr.usage.cost_usd * 1e6) / 1e6 : null;
 
-  // ---- store: R2 (masked JSON) ----
+  // ---- store: masked JSON (R2 when bound, else D1 trace_raw) ----
   const rawKey = `traces/${agent.id}/${traceId}.json`;
   const raw = JSON.stringify(tr);
   const rawBytes = new TextEncoder().encode(raw).byteLength;
-  await env.TRACES.put(rawKey, raw, { httpMetadata: { contentType: 'application/json' } });
+  await putRaw(env, rawKey, raw);
 
   // ---- store: D1 (one batch) ----
   const db = env.DB;
@@ -431,7 +432,7 @@ export async function ingestTrace(
   try {
     await db.batch(stmts);
   } catch (err) {
-    await env.TRACES.delete(rawKey).catch(() => {});
+    await deleteRaw(env, [rawKey]).catch(() => {});
     throw err;
   }
 

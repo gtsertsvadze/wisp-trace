@@ -35,7 +35,8 @@ app.use('*', async (c, next) => {
   }
   await next();
   c.header('X-Content-Type-Options', 'nosniff');
-  c.header('Referrer-Policy', 'strict-origin-when-cross-origin');
+  // Private pages (owner, claim) set no-referrer themselves; don't overwrite it.
+  if (!c.res.headers.has('Referrer-Policy')) c.header('Referrer-Policy', 'strict-origin-when-cross-origin');
   if (!c.res.headers.has('X-Frame-Options')) c.header('X-Frame-Options', 'SAMEORIGIN');
 });
 

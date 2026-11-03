@@ -86,7 +86,6 @@
     const path = row.querySelector('.path'); if (path) buildPath(path, item.ticks);
     const out = row.querySelector('.outcome'); if (out) { out.className = 'outcome is-' + item.outcome; out.textContent = outcomeLabel(item.outcome); }
     const seed = row.querySelector('.seed-tag'); if (seed) seed.classList.toggle('is-hidden', !item.seed);
-    const model = row.querySelector('.live-model'); if (model) model.dataset.meta = item.steps + ' st · ' + item.mins + ' m';
     return row;
   }
   function passesFilter(item) {

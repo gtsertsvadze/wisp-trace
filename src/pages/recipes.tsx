@@ -8,7 +8,7 @@ import type { AppEnv } from '../env';
 import type { DeadEnd, RecipeStep } from '../types';
 import {
   type BlockedSite, type CardStatus, type IndexStatus, type RecipeCard, type RecipeDetail, type TrustMark,
-  getRecipe, listRecipes, parseIndexStatus,
+  getRecipe, listRecipes, matchesQuery, parseIndexStatus,
 } from '../data/recipes';
 import { fmtInt, minsFromSeconds, pad2 } from '../lib/format';
 import { RULES } from '../lib/rules';
@@ -43,7 +43,7 @@ function cardMeta(r: RecipeCard, now: number): string {
   return parts.join(' · ');
 }
 
-function RecipeCardView({ r, now }: { r: RecipeCard; now: number }) {
+function RecipeCardView({ r, now, hidden }: { r: RecipeCard; now: number; hidden?: boolean }) {
   const squares = r.status === 'outdated' ? Math.min(MAX_CARD_SQUARES, r.failures) : r.status === 'blocked' ? 0 : Math.min(MAX_CARD_SQUARES, r.agents_succeeded);
   const tick = r.status === 'outdated' ? 't-fail' : 't-ok';
   const label = r.status === 'outdated' ? `${plural(r.failures, 'failed attempt')}` : `${plural(r.agents_succeeded, 'agent succeeded', 'agents succeeded')}`;
@@ -54,6 +54,7 @@ function RecipeCardView({ r, now }: { r: RecipeCard; now: number }) {
       data-site={r.site}
       data-task={r.title.toLowerCase()}
       data-status={r.status}
+      hidden={hidden}
     >
       <div class="rc-card-head">
         <span class="mute">{r.site}</span>
@@ -80,7 +81,9 @@ app.get('/recipes', async c => {
   const q = (c.req.query('q') ?? '').trim().slice(0, 80);
   const status = parseIndexStatus(c.req.query('status'));
   const now = Date.now();
-  const { items, counts, total } = await listRecipes(c.env, { q, status });
+  // All cards for the status are rendered; query misses get `hidden`, so public/js/recipes.js can filter instantly both ways.
+  const { items, counts, total } = await listRecipes(c.env, { status });
+  const shown = items.filter(r => matchesQuery(r, q)).length;
   const chips: { key: IndexStatus; label: string }[] = [
     { key: 'all', label: 'All' }, { key: 'trusted', label: 'Trusted' }, { key: 'forming', label: 'Forming' }, { key: 'outdated', label: 'Out of date' },
   ];
@@ -114,9 +117,9 @@ app.get('/recipes', async c => {
       ) : (
         <>
           <div class="rc-grid" id="rc-grid">
-            {items.map(r => <RecipeCardView r={r} now={now} />)}
+            {items.map(r => <RecipeCardView r={r} now={now} hidden={!matchesQuery(r, q)} />)}
           </div>
-          <div class="rc-nomatch-wrap" hidden={items.length > 0}>
+          <div class="rc-nomatch-wrap" hidden={shown > 0}>
             <EmptyState title="No recipes match" class="rc-empty rc-nomatch">
               Try a site like <span class="mono">fitlane.com</span> or a task like <span class="mono">cancel</span>.{' '}
               <a href="/recipes" class="link-cta">Show all recipes →</a>
@@ -207,6 +210,8 @@ function SitePolicyCard({ r }: { r: RecipeDetail }) {
       <div class="body-sm">
         {p === 'allows' ? (
           <><span class="mint rc-policy-lead">Allows agents.</span> {r.policy?.note ?? `${r.site} allows agents for this kind of task.`} {tail}</>
+        ) : p === 'blocks' ? (
+          <><span class="coral rc-policy-lead">Blocks agents.</span> {r.policy?.note ?? `${r.site} does not allow agents.`} Your agent should stop and hand back to you. We never publish a way around a block.</>
         ) : (
           <><span class="mute rc-policy-lead">No policy on record.</span> Wisptrace has not confirmed whether {r.site} allows agents. Agents respect the site's terms and hand back if they hit a block. {tail}</>
         )}
@@ -354,7 +359,7 @@ function BlockedPageView({ c, b }: { c: Context<AppEnv>; b: BlockedSite }) {
           <span class="body-sm">No recipe is published for {b.site}.</span>
         </div>
         <p class="rc-blocked-text">
-          {b.site} does not allow agents{b.policy.note ? <>: {b.policy.note}</> : '.'} When an agent asks Wisptrace about this site it is told to stop
+          {b.site} does not allow agents.{b.policy.note ? <> {/[.!?]$/.test(b.policy.note) ? b.policy.note : `${b.policy.note}.`}</> : null} When an agent asks Wisptrace about this site it is told to stop
           and hand the task back to its human. Wisptrace never publishes a way around a block: no steps, no dead ends, no workarounds.
         </p>
         <div class="row" style="gap:12px;margin-top:20px">

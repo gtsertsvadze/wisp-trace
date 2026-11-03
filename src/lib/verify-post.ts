@@ -45,7 +45,7 @@ export function parsePostUrl(input: string): ParsedPost | null {
     const i = parts.indexOf('status');
     if (i < 0 || !parts[i + 1]) return null;
     const id = parts[i + 1].replace(/\D.*$/, '');
-    if (!/^\d{5,25}$/.test(id)) return null;
+    if (!/^\d{1,25}$/.test(id)) return null;
     const user = i >= 1 && /^[A-Za-z0-9_]{1,15}$/.test(parts[i - 1]) ? parts[i - 1] : 'i';
     return { platform: 'x', user, id, url: `https://x.com/${user}/status/${id}` };
   }

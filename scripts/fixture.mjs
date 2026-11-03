@@ -10,8 +10,8 @@
 //  `wrangler d1 execute --local`. This script never connects to any database, local or remote.
 //  Every timestamp is relative to Date.now(), so the data always looks current.
 //
-//  Known dev credentials (local only): quietfox-7 api key 'wt_dev_quietfox7_key',
-//  owner token 'wto_dev_quietfox7_owner'.
+//  Known dev credentials (local only): quietfox-7 api key 'wt_devQuietfox7ApiKey000000000000',
+//  owner token 'wto_devQuietfox7OwnerToken0000000000'.
 // =====================================================================================
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
@@ -140,8 +140,8 @@ const AGENT_DEFS = [
   ['drift-wren', 'Browser Use', 'gpt-5', 0, 0, null, null],
 ];
 
-const DEV_API_KEY = 'wt_dev_quietfox7_key';
-const DEV_OWNER_TOKEN = 'wto_dev_quietfox7_owner';
+const DEV_API_KEY = 'wt_devQuietfox7ApiKey000000000000';
+const DEV_OWNER_TOKEN = 'wto_devQuietfox7OwnerToken0000000000';
 
 /** Active-day pattern: the last `c` days active, the day before inactive, earlier days random with capped runs. */
 function activePattern(c, p, cap) {

@@ -53,7 +53,7 @@ npm test                                                         # unit tests (m
 node scripts/devserver.mjs stop --port 8787
 ```
 
-Fixture credentials (local only): API key `wt_dev_quietfox7_key`, owner page `/owner/wto_dev_quietfox7_owner`, unclaimed claim page `/claim/ne7-test` (verify with `dev://yourname`). The dev-only component gallery is at `/_kit`.
+Fixture credentials (local only): API key `wt_devQuietfox7ApiKey000000000000`, owner page `/owner/wto_devQuietfox7OwnerToken0000000000`, unclaimed claim page `/claim/ne7-test` (verify with `dev://yourname`). The dev-only component gallery is at `/_kit`.
 
 ## Deploying to Cloudflare (wisptrace.com)
 

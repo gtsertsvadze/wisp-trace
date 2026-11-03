@@ -41,8 +41,8 @@ async function computeModelBoard(env: Bindings, now: number): Promise<ModelBoard
       `SELECT t.model, COUNT(*) AS n, COALESCE(SUM(t.outcome = 'done'), 0) AS done, COUNT(DISTINCT t.agent_id) AS ag
        FROM traces t JOIN agents a ON a.id = t.agent_id
        WHERE t.week = ? AND t.task_type = ? AND ${ELIGIBLE} AND LOWER(t.model) != 'unknown'
-       GROUP BY t.model HAVING ag >= ? ORDER BY (done * 1.0 / n) DESC, n DESC LIMIT 4`,
-    ).bind(week, top.task_type, RULES.BOARD_MIN_AGENTS_GROUP).all<{ model: string; n: number; done: number; ag: number }>();
+       GROUP BY t.model HAVING ag >= ? AND n >= ? ORDER BY (done * 1.0 / n) DESC, n DESC LIMIT 4`,
+    ).bind(week, top.task_type, RULES.BOARD_MIN_AGENTS_GROUP, RULES.BOARD_MIN_TASKS_GROUP).all<{ model: string; n: number; done: number; ag: number }>();
     if (results.length < 2) continue;
     return {
       caption: `which model ${thirdPerson(taskType(top.task_type).recipe)} best`,
@@ -56,25 +56,22 @@ async function computeModelBoard(env: Bindings, now: number): Promise<ModelBoard
 export const modelBoard = (env: Bindings, now = Date.now()) => cached(env, 'home:model-board', MIN, () => computeModelBoard(env, now));
 
 export interface Spark {
-  group: string;                           // trend group label, e.g. 'Gift shopping'
+  group: string;                           // caption subject, e.g. 'gift shopping' or 'all'
   days: { day: string; traces: number | null }[]; // 14 days ending yesterday; null = below the k-anonymity threshold
-  multiplier: number | null;               // last complete week vs the week before (null when not publishable)
+  multiplier: number | null;               // week-over-week (null when not publishable)
   published: boolean;                      // enough published days to draw
 }
 
-async function computeSpark(env: Bindings, now: number): Promise<Spark> {
-  const trends = await weeklyTrends(env, { now }).catch(() => null);
-  const pick = trends?.movers[0] ?? trends?.groups[0] ?? null;
-  const group = pick?.group ?? 'Online shopping';
+const enoughDays = (days: Spark['days']) => days.filter(d => d.traces != null).length >= 10;
+
+async function groupDays(env: Bindings, group: string, now: number): Promise<Spark['days']> {
   const types = typesInTrend(group).filter(id => TASK_TYPES.some(t => t.id === id));
   const yesterday = now - DAY;
-  const from = dayOf(yesterday - 13 * DAY);
-  const to = dayOf(yesterday);
-  const marks = types.map(() => '?').join(',');
+  if (!types.length) return [];
   const { results } = await env.DB.prepare(
     `SELECT t.day, COUNT(*) AS traces, COUNT(DISTINCT t.agent_id) AS agents FROM traces t JOIN agents a ON a.id = t.agent_id
-     WHERE t.day >= ? AND t.day <= ? AND ${ELIGIBLE} AND t.task_type IN (${marks}) GROUP BY t.day`,
-  ).bind(from, to, ...types).all<{ day: string; traces: number; agents: number }>();
+     WHERE t.day >= ? AND t.day <= ? AND ${ELIGIBLE} AND t.task_type IN (${types.map(() => '?').join(',')}) GROUP BY t.day`,
+  ).bind(dayOf(yesterday - 13 * DAY), dayOf(yesterday), ...types).all<{ day: string; traces: number; agents: number }>();
   const byDay = new Map(results.map(r => [r.day, r]));
   const days: Spark['days'] = [];
   for (let i = 13; i >= 0; i--) {
@@ -82,8 +79,30 @@ async function computeSpark(env: Bindings, now: number): Promise<Spark> {
     const r = byDay.get(day);
     days.push({ day, traces: r && r.agents >= RULES.TREND_MIN_AGENTS ? r.traces : null });
   }
-  const published = days.filter(d => d.traces != null).length >= 10;
-  return { group, days, multiplier: pick?.multiplier ?? null, published };
+  return days;
+}
+
+/** Last 7 days vs the 7 before, only when every one of the 14 days is published. */
+function wow(days: Spark['days']): number | null {
+  if (days.length !== 14 || days.some(d => d.traces == null)) return null;
+  const sum = (a: Spark['days']) => a.reduce((n, d) => n + (d.traces ?? 0), 0);
+  const prev = sum(days.slice(0, 7));
+  return prev > 0 ? Math.round((sum(days.slice(7)) / prev) * 100) / 100 : null;
+}
+
+// The top mover's group if its days are publishable, then the biggest groups, then all tasks (weeklyTrends().daily).
+async function computeSpark(env: Bindings, now: number): Promise<Spark> {
+  const trends = await weeklyTrends(env, { now }).catch(() => null);
+  const candidates = [...(trends?.movers ?? []).slice(0, 1), ...(trends?.groups ?? []).slice(0, 3)];
+  const seen = new Set<string>();
+  for (const g of candidates) {
+    if (seen.has(g.group)) continue;
+    seen.add(g.group);
+    const days = await groupDays(env, g.group, now);
+    if (enoughDays(days)) return { group: g.group.toLowerCase(), days, multiplier: g.multiplier ?? wow(days), published: true };
+  }
+  const days: Spark['days'] = (trends?.daily ?? []).slice(-14).map(d => ({ day: d.day, traces: d.published ? d.traces : null }));
+  return { group: 'all', days, multiplier: wow(days), published: days.length === 14 && enoughDays(days) };
 }
 
 export const spark = (env: Bindings, now = Date.now()) => cached(env, 'home:spark', MIN, () => computeSpark(env, now));

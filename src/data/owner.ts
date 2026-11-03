@@ -4,6 +4,7 @@
 import type { Bindings } from '../env';
 import type { AgentRow, Outcome, TraceStepRow } from '../types';
 import { randomString, sha256Hex } from '../lib/ids';
+import { deleteRaw, getRaw } from '../lib/rawstore';
 import { minsFromSeconds } from '../lib/format';
 import { taskType } from '../lib/taxonomy';
 import { DAY, dayOf, dayStart, isoWeek } from '../lib/time';
@@ -205,8 +206,8 @@ export async function getOwnerTrace(env: Bindings, agentId: string, traceId: str
   let raw: unknown | null = null;
   if (row.raw_key) {
     try {
-      const o = await env.TRACES.get(row.raw_key);
-      if (o) raw = await o.json();
+      const text = await getRaw(env, row.raw_key);
+      if (text) raw = JSON.parse(text);
     } catch {
       raw = null; // unreadable object: shown as missing, never as an error page
     }
@@ -215,17 +216,14 @@ export async function getOwnerTrace(env: Bindings, agentId: string, traceId: str
 }
 
 // ---------------------------------------------------------------------------------------------
-// Deletes. Each removes the R2 object(s), trace_steps, the traces row(s), decrements counters.traces_total
+// Deletes. Each removes the raw object(s) (R2, or trace_raw without R2), trace_steps, the traces row(s), decrements counters.traces_total
 // (never below 0) and marks the affected recipe groups dirty so the next cron rebuild drops the evidence.
 // ---------------------------------------------------------------------------------------------
 async function r2Delete(env: Bindings, keys: string[]): Promise<void> {
-  for (let i = 0; i < keys.length; i += 500) {
-    const chunk = keys.slice(i, i + 500);
-    try {
-      await env.TRACES.delete(chunk.length === 1 ? chunk[0] : chunk);
-    } catch {
-      // The D1 rows go regardless; an orphaned masked object is unreachable without its row.
-    }
+  try {
+    await deleteRaw(env, keys);
+  } catch {
+    // The D1 rows go regardless; an orphaned masked object is unreachable without its row.
   }
 }
 
@@ -286,4 +284,38 @@ export async function deleteOwnerAgent(env: Bindings, agent: AgentRow, now = Dat
     ).bind(now, scrambleKey, scrambleOwner, agent.id),
   ]);
   return { traces };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Claim
+// ---------------------------------------------------------------------------------------------
+export const normClaimCode = (code: string): string | null => {
+  const c = (code ?? '').trim().toLowerCase();
+  return /^[a-z0-9]{2,8}-[a-z0-9]{2,12}$/.test(c) ? c : null;
+};
+
+/** The non-deleted agent behind a claim code, or null. */
+export async function agentByClaimCode(env: Bindings, code: string): Promise<AgentRow | null> {
+  const c = normClaimCode(code);
+  if (!c) return null;
+  return env.DB.prepare('SELECT * FROM agents WHERE claim_code = ? AND deleted_at IS NULL').bind(c).first<AgentRow>();
+}
+
+export async function traceCount(env: Bindings, agentId: string): Promise<number> {
+  const r = await env.DB.prepare('SELECT COUNT(*) AS n FROM traces WHERE agent_id = ?').bind(agentId).first<{ n: number }>();
+  return r?.n ?? 0;
+}
+
+/**
+ * Mark the agent claimed and store the hash of a fresh owner token. Conditional on it still being unclaimed,
+ * so two racing verifications can't both win. Returns false if it lost the race.
+ */
+export async function markClaimed(
+  env: Bindings, agentId: string, owner: { handle: string; platform: string; post_url: string }, token: string, now = Date.now(),
+): Promise<boolean> {
+  const res = await env.DB.prepare(
+    `UPDATE agents SET claim_status = 'claimed', claimed_at = ?, owner_handle = ?, owner_platform = ?, owner_post_url = ?,
+       owner_token_hash = ? WHERE id = ? AND claim_status = 'unclaimed' AND deleted_at IS NULL`,
+  ).bind(now, owner.handle, owner.platform, owner.post_url, await sha256Hex(token), agentId).run();
+  return (res.meta?.changes ?? 0) > 0;
 }

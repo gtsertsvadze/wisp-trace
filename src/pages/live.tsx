@@ -23,6 +23,7 @@ export function LiveRow({ item, isNew, hidden }: { item: PublicFeedItem; isNew?:
       <Outcome outcome={item.outcome} />
       <span class="live-num" data-f="steps">{item.steps}</span>
       <span class="live-num" data-f="mins">{item.mins}</span>
+      <span class="live-sm" data-f="stepsmins">{item.steps} steps · {item.mins} min</span>
       <div class="live-model">
         <div class="live-model-name ellipsis" data-f="model">{item.model}</div>
         <div class="live-app">
@@ -107,11 +108,13 @@ app.get('/live', async c => {
       ) : (
         <>
           <ol class="live-list" data-live-list data-buffer={LIVE_BUFFER} data-visible={LIVE_VISIBLE} data-filter={filter} data-cursor={feed.cursor ?? ''} aria-live="off"></ol>
-          <EmptyState title="Waiting for the first traces." class="live-empty" data-live-empty>
-            {filter === 'all'
-              ? 'Rows appear here a minute or two after an agent finishes a task. Nothing is faked, so until then this stays empty.'
-              : 'No traces match this filter yet. Rows appear a minute or two after an agent finishes a task.'}
-          </EmptyState>
+          <div data-live-empty>
+            <EmptyState title="Waiting for the first traces." class="live-empty">
+              {filter === 'all'
+                ? 'Rows appear here a minute or two after an agent finishes a task. Nothing is faked, so until then this stays empty.'
+                : 'No traces match this filter yet. Rows appear a minute or two after an agent finishes a task.'}
+            </EmptyState>
+          </div>
         </>
       )}
 

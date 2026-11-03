@@ -1,0 +1,50 @@
+/* Leaderboards (UI-2). Design: docs/design/Leaderboards.dc.html */
+.lb-title .lead { margin-top: 14px; }
+.lb-title h1 { margin-top: 12px; }
+
+.lb-grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(260px, .9fr); gap: 24px; align-items: start; }
+
+.lb-chips { margin-bottom: 20px; }
+.chip-group-aside .lb-caption { font-size: 12px; }
+
+.lb-row {
+  display: grid; grid-template-columns: 28px minmax(150px, 1.4fr) 56px minmax(96px, 1fr) 56px; gap: 10px;
+  align-items: center; padding: 12px 10px; border-top: 1px solid var(--line); font-size: 15px; color: inherit;
+}
+.lb-row.lb-head { padding: 0 10px 10px; border-top: 0; font-size: 11px; }
+.lb-rank { font-family: var(--font-mono); font-weight: 700; color: var(--mute); }
+.lb-rank.mint { color: var(--mint); }
+.lb-name { min-width: 0; }
+.lb-name-main { font-weight: 600; }
+.lb-sub { font-size: 12px; color: var(--mute); }
+.lb-num { font-family: var(--font-mono); font-size: 13px; }
+
+.lb-weeks {
+  display: flex; justify-content: space-between; gap: 12px; font-size: 12px; color: var(--mute);
+  border-top: 1px solid var(--line); padding: 14px 10px 0;
+}
+.lb-weeks a { color: var(--mute); }
+.lb-weeks a:hover { color: var(--mint); }
+
+.lb-awards-kicker { padding: 4px 4px 0; }
+.lb-hw-name { display: block; margin: 10px 0 8px; color: var(--text); }
+.lb-hw-name:hover { color: var(--mint); }
+.lb-share { margin-top: 16px; }
+.lb-award { padding: 20px 24px; }
+.lb-award-name { display: block; margin: 8px 0 4px; color: var(--text); }
+a.lb-award-name:hover { color: var(--mint); }
+.lb-awards-empty { padding: 28px 20px; }
+.lb-awards-note { padding: 4px; }
+
+@media (max-width: 760px) {
+  .lb-grid { grid-template-columns: minmax(0, 1fr); }
+  .lb-award { padding: 20px; }
+}
+@media (max-width: 560px) {
+  .lb-board.card { padding: 16px 12px; }
+  .lb-chips .chip-group-aside { margin-left: 0; width: 100%; }
+  .lb-row { grid-template-columns: 22px minmax(0, 1fr) 40px 84px; gap: 8px; padding: 12px 4px; }
+  .lb-row.lb-head { padding: 0 4px 10px; }
+  .lb-median { display: none; }
+  .lb-weeks { padding-inline: 4px; }
+}

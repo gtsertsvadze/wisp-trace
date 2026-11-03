@@ -1,0 +1,100 @@
+/* /claim and /claim/:code (UI-5). Design: docs/design/Claim.dc.html. Shared tokens/components: base.css. */
+
+.cl-intro { max-width: 720px; margin-bottom: 40px; }
+.cl-intro .h1 { margin: 12px 0 16px; }
+.cl-intro p { margin: 0; color: var(--dim); }
+.cl-intro .cmdbox { margin-top: 24px; }
+.cl-intro code, .cl-owner-note code, .cl-already code {
+  font-family: var(--font-mono); font-size: .88em; color: var(--mint); background: var(--mint-08);
+  padding: 1px 6px; border-radius: 6px;
+}
+
+.cl-steps { margin-bottom: 20px; }
+.cl-panel[hidden] { display: none; }
+
+/* explainer column */
+.cl-explain { padding: 8px 4px; display: grid; gap: 14px; font-size: 15px; color: var(--dim); align-content: start; }
+.cl-explain-title { font-weight: 700; font-size: 20px; color: var(--text); letter-spacing: -0.02em; }
+.cl-explain-link { color: var(--mint); font-weight: 600; }
+.cl-explain-link:hover { color: var(--mint-hover); }
+.cl-example { font-size: 11px; padding: 1px 8px; color: var(--mute); }
+
+/* step 1: the agent's message */
+.cl-chat-meta { display: flex; justify-content: space-between; align-items: center; gap: 10px; font-family: var(--font-mono); font-size: 12px; color: var(--mute); margin-bottom: 12px; }
+.cl-msg { display: grid; gap: 12px; font-size: 15px; line-height: 1.55; }
+.cl-msg-link { font-family: var(--font-mono); font-weight: 600; color: var(--mint); word-break: break-all; }
+.cl-msg-link:hover { color: var(--mint-hover); }
+
+/* step 2: the claim card */
+.cl-card { padding: 28px; }
+.cl-card .kicker { letter-spacing: .12em; }
+.cl-name { font-weight: 800; font-size: 44px; letter-spacing: -0.035em; line-height: 1; margin: 10px 0 8px; overflow-wrap: anywhere; }
+.cl-meta { font-size: 14px; color: var(--mute); }
+.cl-list { margin-top: 24px; display: grid; gap: 8px; }
+.cl-list-never { margin-top: 20px; }
+.cl-item { display: grid; grid-template-columns: 16px 1fr; gap: 10px; font-size: 14px; align-items: start; }
+.cl-yes { color: var(--mint); font-weight: 700; }
+.cl-no { color: var(--coral); font-weight: 700; }
+.cl-actions { margin-top: 24px; display: grid; gap: 8px; }
+.cl-btn { padding: 13px 18px; font-size: 15px; }
+.cl-btn.btn-secondary { font-weight: 600; }
+
+/* step 3: the composer */
+.cl-composer { display: grid; gap: 16px; }
+.cl-who { display: flex; gap: 10px; align-items: center; font-size: 14px; }
+.cl-avatar { width: 36px; height: 36px; border-radius: 50%; background: linear-gradient(135deg, #4c5268, #2a2f40); display: block; flex: none; }
+.cl-composer .textarea { display: block; field-sizing: content; }
+.cl-composer .textarea[readonly] { cursor: default; }
+.cl-join {
+  border: 1px solid rgba(236, 238, 246, .1); border-radius: 16px; padding: 20px; display: grid; gap: 10px;
+  background: radial-gradient(400px 200px at 0% 0%, rgba(142, 240, 210, .14), transparent 60%), var(--panel-deep);
+}
+.cl-join-head { display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--mint); }
+.cl-join-title { font-weight: 800; font-size: 34px; letter-spacing: -0.035em; line-height: 1; }
+.cl-join-title span { color: var(--mute); }
+.cl-join-grid { display: grid; grid-template-columns: repeat(14, 1fr); gap: 3px; }
+.cl-join-grid > div { aspect-ratio: 1; border-radius: 2px; background: rgba(236, 238, 246, .07); }
+.cl-join-meta { font-family: var(--font-mono); font-size: 12px; color: var(--mute); }
+.cl-post-row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.cl-card-img { display: block; width: 100%; height: auto; border-radius: 16px; border: 1px solid rgba(236, 238, 246, .1); background: var(--panel-deep); }
+
+/* claimed highlight */
+.cl-claimed-title { font-weight: 800; font-size: 28px; letter-spacing: -0.03em; line-height: 1.05; margin: 10px 0 8px; overflow-wrap: anywhere; }
+.cl-claimed-link { display: inline-block; margin-top: 14px; color: var(--mint); font-weight: 600; }
+.cl-claimed-link:hover { color: var(--mint-hover); }
+.cl-owner { margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--mint-18); display: grid; gap: 10px; }
+.cl-owner-box {
+  display: flex; align-items: center; gap: 12px; background: var(--panel-deep); border: 1px solid var(--mint-30);
+  border-radius: 12px; padding: 12px 14px;
+}
+.cl-owner-url { flex: 1; min-width: 0; font-family: var(--font-mono); font-size: 13px; color: var(--text); overflow-wrap: anywhere; }
+.cl-owner-note { margin: 0; font-size: 14px; color: var(--dim); }
+
+/* verify form */
+.cl-verify { display: grid; gap: 12px; }
+.cl-verify-card:has(.cl-claimed), .cl-verify-card.is-claimed { padding: 0; border: 0; background: none; }
+.cl-label { font-weight: 700; font-size: 18px; letter-spacing: -0.02em; }
+.cl-verify-row { display: flex; gap: 8px; }
+.cl-verify-row .input { flex: 1; font-size: 14px; font-family: var(--font-mono); }
+.cl-verify .meta { margin: 0; }
+.cl-error {
+  margin: 0; font-size: 14px; color: var(--coral); background: var(--coral-05); border: 1px solid var(--coral-30);
+  border-radius: 12px; padding: 10px 14px;
+}
+.cl-error[hidden] { display: none; }
+.cl-verify.is-busy .btn { opacity: .6; pointer-events: none; }
+
+/* already claimed */
+.cl-already { padding-top: 24px; }
+.cl-handle { color: var(--mint); font-weight: 600; }
+.cl-already-actions { margin-top: 28px; gap: 12px; }
+
+@media (max-width: 760px) {
+  .cl-name { font-size: 38px; }
+  .cl-verify-row { flex-direction: column; }
+  .cl-verify-row .btn { width: 100%; }
+}
+@media (max-width: 420px) {
+  .cl-card { padding: 22px; }
+  .cl-join-title { font-size: 28px; }
+}

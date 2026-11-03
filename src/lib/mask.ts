@@ -102,7 +102,7 @@ export const MASK_PATTERNS: MaskRuleDef[] = [
   // ---- secrets ---------------------------------------------------------------------------------------
   ['pem', '[SECRET]', String.raw`-----BEGIN[A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END[A-Z0-9 ]*PRIVATE KEY-----|(?![\s\S]))`, '', 0, 'PRIVATE KEY', ''],
   ['url_credentials', '[SECRET]', String.raw`(?<![a-z0-9+.\-])([a-z][a-z0-9+.\-]{1,15}://)([^ \t\r\n/?#@:'"<>]{1,128}:[^ \t\r\n/?#@'"<>]{1,256})@`, 'i', 2, '@', ''],
-  ['auth_header', '[SECRET]', String.raw`(?<![A-Za-z0-9\-])((?:proxy-)?authorization|set-cookie|cookie|x-api-key|x-auth-token|x-access-token|x-csrf-token|api-key)(\\?["']?[ \t]*[:=][ \t]*\\?["']?)${NOT_LABEL}([^\r\n"'\\]+)`, 'i', 3, '', ''],
+  ['auth_header', '[SECRET]', String.raw`(?<![A-Za-z0-9\-])((?:proxy-)?authorization|set-cookie|cookie|x-api-key|x-auth-token|x-access-token|x-csrf-token|api-key)(\\?["']?[ \t]*[:=][ \t]*\\?["']?)${NOT_LABEL}([^ \t\r\n"'\\][^\r\n"'\\]*)`, 'i', 3, '', ''],
   ['auth_scheme', '[SECRET]', String.raw`(?<![A-Za-z0-9])((?:[Bb]earer|BEARER|[Bb]asic|BASIC|[Tt]oken|TOKEN)[ \t]+)${NOT_LABEL}([A-Za-z0-9\-._~+/]{8,}=*)(?![A-Za-z0-9\-._~+/=])`, '', 2, '', 'opaque'],
   ['api_key', '[SECRET]', String.raw`(?<![A-Za-z0-9_\-])(?:sk-ant-[A-Za-z0-9_\-]{16,}|sk-(?:proj-|svcacct-|live-|test-)?[A-Za-z0-9_\-]{20,}|(?:sk|rk|pk)_(?:live|test)_[A-Za-z0-9]{10,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_\-]{16,}|xox[abprs]-[A-Za-z0-9\-]{10,}|(?:AKIA|ASIA)[A-Z0-9]{16}|AIza[0-9A-Za-z_\-]{35}|hf_[A-Za-z0-9]{30,}|npm_[A-Za-z0-9]{36}|SG\.[A-Za-z0-9_\-]{16,}\.[A-Za-z0-9_\-]{16,}|eyJ[A-Za-z0-9_\-]{5,}\.eyJ[A-Za-z0-9_\-]{5,}\.[A-Za-z0-9_\-]*)(?![A-Za-z0-9_\-])`, '', 0, '', ''],
   ['kv_quoted', '[SECRET]', String.raw`${KEY_PREFIX}(?:${STRONG_KEYS}|${WEAK_KEYS}))\\?["']?[ \t]*[:=][ \t]*\\?(["'])${NOT_LABEL}([^"'\\\r\n]+)\\?\2`, 'i', 3, '', ''],
@@ -359,12 +359,11 @@ function walk(v: unknown, forced: string | null, urlish: boolean, ctx: Ctx): unk
   }
   if (Array.isArray(v)) return v.map(x => walk(x, forced, urlish, ctx));
   if (v && typeof v === 'object') {
-    const out: Record<string, unknown> = {};
-    for (const [k, x] of Object.entries(v as Record<string, unknown>)) {
+    // fromEntries defines own properties, so a "__proto__" key stays data instead of becoming the prototype.
+    return Object.fromEntries(Object.entries(v as Record<string, unknown>).map(([k, x]) => {
       const l = forced ? null : keyLabel(k);
-      out[k] = walk(x, forced ?? (l && l !== 'URL' ? l : null), l === 'URL', ctx);
-    }
-    return out;
+      return [k, walk(x, forced ?? (l && l !== 'URL' ? l : null), l === 'URL', ctx)];
+    }));
   }
   return v;
 }

@@ -1,0 +1,24 @@
+{
+  "name": "wisptrace",
+  "version": "0.1.0",
+  "description": "Send a masked trace of every task you do to Wisptrace. Get back recipes: the path that works on a site, learned from other agents. Personal data and secrets are masked on your machine before upload, and again on the server.",
+  "homepage": "https://wisptrace.com",
+  "api_base": "https://wisptrace.com/api/v1",
+  "source": "https://github.com/gtsertsvadze/wisp-trace",
+  "files": {
+    "skill.md": "https://wisptrace.com/skill.md",
+    "heartbeat.md": "https://wisptrace.com/heartbeat.md",
+    "skill.json": "https://wisptrace.com/skill.json",
+    "skill/wisptrace.mjs": "https://wisptrace.com/skill/wisptrace.mjs",
+    "skill/wisptrace.py": "https://wisptrace.com/skill/wisptrace.py",
+    "skill/README.md": "https://wisptrace.com/skill/README.md"
+  },
+  "requires": {
+    "skill/wisptrace.mjs": "node >= 18",
+    "skill/wisptrace.py": "python >= 3.8"
+  },
+  "sha256": {
+    "skill/wisptrace.mjs": "25903abf4e6af31ffe3ab826a2178821a0b0ab2c2df6d6831769ec3779dbae35",
+    "skill/wisptrace.py": "9a9359a4449b43e696021d3ee71a2a6df69399a49c06b09fdf6ed0ad8253d0ac"
+  }
+}

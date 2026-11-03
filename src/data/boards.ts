@@ -212,7 +212,10 @@ export async function chooseWeek(env: Bindings, requested: unknown, now = Date.n
   } else {
     week = current;
     const rows = await agentBoard(env, current);
-    if (rows.length < 3) week = lastCompleteWeek(now);
+    if (rows.length < 3) {
+      const last = lastCompleteWeek(now);
+      if ((await agentBoard(env, last)).length > rows.length) week = last; // an empty site stays on "this week"
+    }
   }
   const first = await cached(env, 'board:first-week', CACHE_MS, async () => {
     const r = await env.DB.prepare('SELECT MIN(week) AS w FROM traces').first<{ w: string | null }>();

@@ -3,7 +3,7 @@
 // Never log trace contents here: only ids, counts and error codes.
 import { z } from 'zod';
 import type { Bindings } from '../env';
-import type { AgentRow, Outcome } from '../types';
+import type { AgentRow, Outcome, TaskRow, TaskSource } from '../types';
 import { AGENT_TEXT } from '../lib/agent-text';
 import { newId } from '../lib/ids';
 import { maskDeep, maskUrl } from '../lib/mask';
@@ -14,15 +14,20 @@ import { RULES } from '../lib/rules';
 import { DAY, HOUR, MIN, dayOf, isoWeek } from '../lib/time';
 import { reportBlocked } from './policies';
 import { buildTicks, normalizeOutcome, normalizeSteps } from './steps';
-import { findOrCreateTask, isNewToCrowd, isPublicTask, nameTrace } from './tasks';
+import { findOrCreateTask, isNewToCrowd, isPublicTask, nameTrace, ownerKey } from './tasks';
 
 export interface IngestResult {
   ok: true;
   trace: { id: string; outcome: Outcome; steps: number; mins: number; site: string | null };
   /** The specific task this trace counts toward. `public`: its name is shown on public pages yet. */
-  task: { slug: string; label: string; source: 'agent' | 'llm' | 'heuristic'; public: boolean; crowd: number };
-  /** Set when the trace followed a recipe and succeeded: the recipe's contributors got an upvote. */
-  upvoted_recipe: string | null;
+  task: { slug: string; label: string; source: TaskSource; public: boolean; crowd: number };
+  /**
+   * Set when the trace cited a recipe (recipe_id). The trace itself is the evidence and counts toward that recipe:
+   * 'upvoted' (it worked; the recipe's builders got an upvote), 'already_upvoted' (one per person per recipe, ever),
+   * 'own_recipe' (your traces helped build it), 'seed' (seed agents don't vote), 'failure_recorded' (it didn't work:
+   * the recipe is re-checked within minutes and marked out of date if others fail too).
+   */
+  followed_recipe: { id: string; result: 'upvoted' | 'already_upvoted' | 'own_recipe' | 'seed' | 'failure_recorded' } | null;
   masked_server: number;
 }
 
@@ -89,6 +94,7 @@ const TraceSchema = z.looseObject({
     z.looseObject({
       description: reqStr(2000),
       tag: optStr(200),
+      sensitive: z.preprocess(toBool, z.boolean()).optional().catch(undefined),
       sites: z.preprocess(
         v => (typeof v === 'string' ? [v] : v),
         z.array(z.preprocess(toStr, z.string()).catch('')).optional(),
@@ -212,11 +218,27 @@ export async function ingestTrace(
   const { steps, sites: stepSites } = normalizeSteps(tr.steps, RULES.TRACE_MAX_STEPS);
   const sites: string[] = [];
   for (const d of [...(tr.task.sites ?? []).map(s => registrableDomain(s)), ...stepSites]) if (d && !sites.includes(d)) sites.push(d);
-  const site = sites[0] ?? null;
+  let site = sites[0] ?? null;
 
-  const { name, source } = await nameTrace(env, { tag: tr.task.tag, description: tr.task.description, site });
-  const task = await findOrCreateTask(env, name, source, site, receivedAt);
-  const newToCrowd = await isNewToCrowd(env, task.id, agent);
+  // A trace that cites a recipe is about that recipe's task (and site, when it names none): its success or failure is
+  // evidence for exactly that recipe. Otherwise the trace is named like any other.
+  const recipeId = tr.recipe_id && RECIPE_ID.test(tr.recipe_id) ? tr.recipe_id : null;
+  const followed = recipeId
+    ? await env.DB.prepare('SELECT id, task_id, site FROM recipes WHERE id = ?').bind(recipeId).first<{ id: string; task_id: string; site: string }>()
+    : null;
+  let task: TaskRow | null = null;
+  let source: TaskSource = 'recipe';
+  if (followed && (!site || site === followed.site)) {
+    task = await env.DB.prepare('SELECT * FROM tasks WHERE id = ?').bind(followed.task_id).first<TaskRow>();
+    if (task && !site) site = followed.site;
+  }
+  if (!task) {
+    const named = await nameTrace(env, { tag: tr.task.tag, description: tr.task.description, site });
+    source = named.source;
+    task = await findOrCreateTask(env, named.name, source, site, receivedAt);
+  }
+  const owner = ownerKey(agent);
+  const newToCrowd = await isNewToCrowd(env, task.id, owner);
 
   const ticks = buildTicks(steps.map(s => s.result), outcome);
 
@@ -240,7 +262,6 @@ export async function ingestTrace(
   const feedVisibleAt = (opts.occurredAt ?? receivedAt) + Math.round(delayS * 1000);
 
   const recipeGroup = site ? `${task.id}|${site}` : null;
-  const recipeId = tr.recipe_id && RECIPE_ID.test(tr.recipe_id) ? tr.recipe_id : null;
   const model = tr.agent?.model ? normalizeModel(tr.agent.model) : agent.model || 'unknown';
   const app = tr.agent?.app ? normalizeApp(tr.agent.app) : agent.app || 'Unknown';
   const cost = tr.usage?.cost_usd != null && tr.usage.cost_usd >= 0 && tr.usage.cost_usd < 10_000
@@ -258,13 +279,14 @@ export async function ingestTrace(
     db.prepare(
       `INSERT INTO traces (id, agent_id, received_at, started_at, ended_at, occurred_at, day, week, task_id, task_source,
         task_text, site, sites_json, outcome, fail_reason, blocked_by_site, steps_count, ticks, duration_s, cost_usd,
-        model, app, recipe_id, recipe_group, raw_key, raw_bytes, mask_client, mask_server, feed_visible_at, is_seed)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        model, app, recipe_id, recipe_group, raw_key, raw_bytes, mask_client, mask_server, feed_visible_at, is_seed, owner_key, sensitive)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).bind(
       traceId, agent.id, receivedAt, startedAt, endedAt, occurredAt, dayOf(occurredAt), isoWeek(occurredAt), task.id, source,
       tr.task.description, site, sites.length ? JSON.stringify(sites) : null, outcome, cap(tr.outcome.reason, 300),
       blocked ? 1 : 0, steps.length, ticks, durationS, cost,
       model, app, recipeId, recipeGroup, rawKey, rawBytes, maskClient, maskServer, feedVisibleAt, agent.is_seed ? 1 : 0,
+      owner, tr.task.sensitive ? 1 : 0,
     ),
     db.prepare('UPDATE tasks SET traces = traces + 1, crowd = crowd + ?, last_seen_at = MAX(last_seen_at, ?) WHERE id = ?')
       .bind(newToCrowd ? 1 : 0, occurredAt, task.id),
@@ -276,14 +298,27 @@ export async function ingestTrace(
          last_trace_at = MAX(COALESCE(last_trace_at, 0), excluded.last_trace_at)`,
     ).bind(recipeGroup, task.id, site, occurredAt));
   }
-  // Implicit upvote: this agent followed someone else's recipe and it worked. One per (recipe, agent).
-  const voteAt = recipeId && outcome === 'done' ? stmts.length : -1;
-  if (voteAt >= 0) {
-    stmts.push(db.prepare(
-      `INSERT OR IGNORE INTO upvotes (recipe_id, voter_id, trace_id, at, week)
-       SELECT ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM recipes WHERE id = ?)
-         AND NOT EXISTS (SELECT 1 FROM recipe_contributors WHERE recipe_id = ? AND agent_id = ?)`,
-    ).bind(recipeId, agent.id, traceId, occurredAt, isoWeek(occurredAt), recipeId, recipeId, agent.id));
+  // Implicit upvote: someone followed another person's recipe, sent the trace that proves it, and it worked. One per
+  // (recipe, follower owner), ever. Seed agents never vote; nobody upvotes a recipe their own agents helped build.
+  let followResult: NonNullable<IngestResult['followed_recipe']>['result'] | null = null;
+  let voteAt = -1;
+  if (followed) {
+    if (outcome !== 'done') followResult = 'failure_recorded';
+    else if (agent.is_seed) followResult = 'seed';
+    else {
+      const own = await db.prepare(
+        `SELECT 1 AS x FROM recipe_contributors c JOIN agents a ON a.id = c.agent_id
+         WHERE c.recipe_id = ? AND (a.id = ? OR (a.is_seed = 0 AND a.owner_handle IS NOT NULL
+           AND 'o:' || COALESCE(a.owner_platform, '') || ':' || LOWER(a.owner_handle) = ?)) LIMIT 1`,
+      ).bind(followed.id, agent.id, owner).first<{ x: number }>();
+      if (own) followResult = 'own_recipe';
+      else {
+        voteAt = stmts.length;
+        stmts.push(db.prepare(
+          'INSERT OR IGNORE INTO upvotes (recipe_id, voter_owner, voter_id, trace_id, at, week) VALUES (?, ?, ?, ?, ?, ?)',
+        ).bind(followed.id, owner, agent.id, traceId, occurredAt, isoWeek(occurredAt)));
+      }
+    }
   }
   stmts.push(db.prepare(
     `INSERT INTO counters (key, value) VALUES ('traces_total', 1) ON CONFLICT(key) DO UPDATE SET value = value + 1`,
@@ -291,10 +326,9 @@ export async function ingestTrace(
   stmts.push(db.prepare('UPDATE agents SET last_seen_at = MAX(COALESCE(last_seen_at, 0), ?), model = ?, app = ? WHERE id = ?')
     .bind(receivedAt, model, app, agent.id));
 
-  let upvoted: string | null = null;
   try {
     const res = await db.batch(stmts);
-    if (voteAt >= 0 && (res[voteAt]?.meta.changes ?? 0) > 0) upvoted = recipeId;
+    if (voteAt >= 0) followResult = (res[voteAt]?.meta.changes ?? 0) > 0 ? 'upvoted' : 'already_upvoted';
   } catch (err) {
     await deleteRaw(env, [rawKey]).catch(() => {});
     throw err;
@@ -315,7 +349,7 @@ export async function ingestTrace(
     ok: true,
     trace: { id: traceId, outcome, steps: steps.length, mins, site },
     task: { slug: task.slug, label: task.label, source, public: isPublicTask({ crowd }), crowd },
-    upvoted_recipe: upvoted,
+    followed_recipe: followed && followResult ? { id: followed.id, result: followResult } : null,
     masked_server: maskServer,
   };
 }

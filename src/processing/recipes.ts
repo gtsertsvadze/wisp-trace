@@ -28,6 +28,7 @@ export interface GroupTrace {
   app: string;
   steps_count: number;
   duration_s: number | null;
+  owner_key?: string;            // who the trace counts as (claimed owner / seed agent); falls back to agent_id
 }
 export type GroupStep = NormStep & { trace_id: string };
 
@@ -139,7 +140,8 @@ function median(xs: number[]): number | null {
   return Math.round(s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2);
 }
 
-const distinct = (ts: { agent_id: string }[]) => new Set(ts.map(t => t.agent_id)).size;
+/** Different people behind a set of traces: owners, not agents (several agents of one owner count once). */
+const distinct = (ts: { agent_id: string; owner_key?: string }[]) => new Set(ts.map(t => t.owner_key || t.agent_id)).size;
 
 /** Relative site path, ids collapsed. Absolute URLs and anything odd are dropped. */
 function cleanPath(p: string | null): string | null {
@@ -218,8 +220,9 @@ function buildDeadEnds(traces: TraceInfo[], steps: StoredStep[], keep: Map<strin
       if (pathSigs.has(s.sig)) return;
       let a = acc.get(s.sig);
       if (!a) acc.set(s.sig, (a = { agents: new Set(), rows: [], next: [] }));
-      if (!a.agents.has(t.agent_id) || a.rows.length < 50) a.rows.push(s);
-      a.agents.add(t.agent_id);
+      const who = t.owner_key || t.agent_id; // dead ends also need two different people
+      if (!a.agents.has(who) || a.rows.length < 50) a.rows.push(s);
+      a.agents.add(who);
       const nxt = meaningful.slice(i + 1, i + 4).find(x => pathSigs.has(x.sig) && x.result !== 'fail');
       if (nxt) a.next.push(nxt.sig);
     });
@@ -544,7 +547,7 @@ export async function buildGroup(env: Bindings, grp: string, now = Date.now()): 
     const since = now - 90 * DAY;
     const [tr, cur, maxV, policy] = await Promise.all([
       env.DB.prepare(
-        `SELECT t.id, t.agent_id, t.occurred_at, t.outcome, t.model, t.app, t.steps_count, t.duration_s, t.raw_key
+        `SELECT t.id, t.agent_id, t.owner_key, t.occurred_at, t.outcome, t.model, t.app, t.steps_count, t.duration_s, t.raw_key
          FROM traces t JOIN agents a ON a.id = t.agent_id
          WHERE t.recipe_group = ? AND t.occurred_at >= ? AND a.deleted_at IS NULL
          ORDER BY t.occurred_at DESC LIMIT ?`,

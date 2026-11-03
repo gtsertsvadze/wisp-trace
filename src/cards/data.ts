@@ -95,7 +95,7 @@ export async function agentCardData(env: Bindings, name: string, now = Date.now(
 // ---------------------------------------------------------------------------------------------
 export const AWARD_IDS: AwardId[] = ['most_shared', 'trendsetter', 'most_upvoted', 'most_reliable_model', 'top_app', 'longest_streak'];
 const AWARD_TITLE: Record<AwardId, string> = {
-  most_shared: 'Most traces shared',
+  most_shared: 'Most shared',
   trendsetter: 'Trend-setter of the week',
   most_upvoted: 'Most upvoted',
   most_reliable_model: 'Most reliable model',
@@ -131,7 +131,7 @@ export async function awardCardData(env: Bindings, week: string, award: AwardId)
   switch (award) {
     case 'most_shared':
       stats = [
-        { value: fmtInt(tasks ?? row.value ?? 0), label: 'traces shared in seven days', accent: true },
+        { value: fmtInt(tasks ?? row.value ?? 0), label: 'shares in seven days', accent: true },
         { value: r1(d.rate), unit: '%', label: 'success' },
         ...(d.minutes != null ? [{ value: fmtHours(d.minutes), label: 'worked' }] : []),
       ];
@@ -145,8 +145,8 @@ export async function awardCardData(env: Bindings, week: string, award: AwardId)
       break;
     case 'trendsetter':
       stats = [
-        { value: fmtInt(d.trending ?? row.value ?? 0), label: 'traces on trending tasks', accent: true },
-        ...(tasks != null ? [{ value: fmtInt(tasks), label: 'shared this week' }] : []),
+        { value: fmtInt(d.trending ?? row.value ?? 0), label: 'shares on trending tasks', accent: true },
+        ...(tasks != null ? [{ value: fmtInt(tasks), label: 'shares this week' }] : []),
         { value: r1(d.rate), unit: '%', label: 'success' },
       ];
       if (d.task_label) qualifier = `“${d.task_label}”`;
@@ -202,13 +202,13 @@ export async function boardCardData(env: Bindings, board: Board, week: string, n
     const results = (await agentBoard(env, week, board)).slice(0, 5);
     rows = results.map(r => ({
       rank: r.rank, name: r.name, seed: r.is_seed, pct: Math.round(r.success), median: null,
-      tasks: board === 'trending' ? r.trending : board === 'upvoted' ? r.upvotes : r.tasks,
-      sub: [r.app, r.model, r.is_seed ? 'Wisptrace' : r.owner_handle].filter(Boolean).join(' · '),
+      tasks: board === 'trending' ? r.trending : board === 'upvoted' ? r.upvotes : r.shares,
+      sub: [r.app, r.model, r.owner_handle].filter(Boolean).join(' · '),
     }));
   } else {
     const col = board === 'models' ? 't.model' : 't.app';
     const { results } = await env.DB.prepare(
-      `SELECT ${col} AS k, COUNT(*) AS n, COALESCE(SUM(t.outcome = 'done'), 0) AS done, COUNT(DISTINCT t.agent_id) AS ag
+      `SELECT ${col} AS k, COUNT(*) AS n, COALESCE(SUM(t.outcome = 'done'), 0) AS done, COUNT(DISTINCT t.owner_key) AS ag
        FROM traces t JOIN agents a ON a.id = t.agent_id WHERE t.week = ? AND ${ELIGIBLE} AND LOWER(${col}) != 'unknown'
        GROUP BY ${col} HAVING ag >= ? AND n >= ? ORDER BY (done * 1.0 / n) DESC, n DESC LIMIT 5`,
     ).bind(week, RULES.BOARD_MIN_AGENTS_GROUP, RULES.BOARD_MIN_TASKS_GROUP).all<{ k: string; n: number; done: number; ag: number }>();
@@ -218,14 +218,14 @@ export async function boardCardData(env: Bindings, board: Board, week: string, n
     }));
   }
   const rule = board === 'agents'
-    ? `Agents need ${RULES.BOARD_MIN_TASKS_AGENT}+ traces in a week to rank.`
+    ? `One share per task per day, up to ${RULES.SHARES_PER_DAY} a day. Seed agents are never ranked.`
     : board === 'trending'
-      ? 'Ranked by traces on the week’s trending tasks.'
+      ? 'Shares on the week’s trending tasks. Seed agents are never ranked.'
       : board === 'upvoted'
-        ? 'An upvote: another agent followed a recipe its traces built, and it worked.'
-        : `A ${board === 'models' ? 'model' : 'agent app'} needs ${RULES.BOARD_MIN_AGENTS_GROUP}+ agents and ${RULES.BOARD_MIN_TASKS_GROUP}+ tasks in a week to rank.`;
+        ? 'An upvote: another person’s agent followed a recipe its traces built, and it worked.'
+        : `A ${board === 'models' ? 'model' : 'agent app'} needs ${RULES.BOARD_MIN_AGENTS_GROUP}+ different people and ${RULES.BOARD_MIN_TASKS_GROUP}+ tasks in a week to rank.`;
   const q = new URLSearchParams();
-  if (board !== 'agents') q.set('board', board);
+  q.set('board', board);
   if (!live) q.set('week', week);
   return {
     board, rows, totalTasks: total?.n ?? 0, rule,
@@ -296,17 +296,20 @@ export async function recipeCardData(env: Bindings, site: string, slug: string, 
 // ---------------------------------------------------------------------------------------------
 // Week helpers used by the stat of the day
 // ---------------------------------------------------------------------------------------------
+/** The week's most_shared award (credited shares, not raw volume), for the stat of the day. */
 export async function mostShared(env: Bindings, week: string) {
-  return env.DB.prepare(
-    `SELECT a.name, a.app, a.model, COUNT(*) AS n, COALESCE(SUM(t.outcome = 'done'), 0) AS done
-     FROM traces t JOIN agents a ON a.id = t.agent_id WHERE t.week = ? AND ${ELIGIBLE} AND a.is_seed = 0
-     GROUP BY t.agent_id HAVING n >= ? ORDER BY n DESC, done DESC LIMIT 1`,
-  ).bind(week, RULES.BOARD_MIN_TASKS_AGENT).first<{ name: string; app: string; model: string; n: number; done: number }>();
+  const r = await env.DB.prepare(
+    `SELECT w.subject AS name, w.value AS n, w.detail_json, a.app, a.model FROM awards w JOIN agents a ON a.id = w.agent_id
+     WHERE w.week = ? AND w.award = 'most_shared' AND a.deleted_at IS NULL AND a.is_seed = 0`,
+  ).bind(week).first<{ name: string; n: number; detail_json: string; app: string; model: string }>();
+  if (!r) return null;
+  const d = parseJson<{ rate?: number; app?: string; model?: string }>(r.detail_json, {});
+  return { name: r.name, n: r.n, rate: Math.round(d.rate ?? 0), app: d.app || r.app, model: d.model || r.model };
 }
 
 export async function mostReliableModel(env: Bindings, week: string) {
   return env.DB.prepare(
-    `SELECT t.model AS model, COUNT(*) AS n, COALESCE(SUM(t.outcome = 'done'), 0) AS done, COUNT(DISTINCT t.agent_id) AS ag
+    `SELECT t.model AS model, COUNT(*) AS n, COALESCE(SUM(t.outcome = 'done'), 0) AS done, COUNT(DISTINCT t.owner_key) AS ag
      FROM traces t JOIN agents a ON a.id = t.agent_id WHERE t.week = ? AND ${ELIGIBLE} AND LOWER(t.model) != 'unknown'
      GROUP BY t.model HAVING ag >= ? AND n >= ? ORDER BY (done * 1.0 / n) DESC, n DESC LIMIT 1`,
   ).bind(week, RULES.BOARD_MIN_AGENTS_GROUP, RULES.BOARD_MIN_TASKS_GROUP).first<{ model: string; n: number; done: number; ag: number }>();

@@ -21,11 +21,11 @@ const since = (ms: number) => { const d = new Date(ms); return `${d.getUTCDate()
 function awardLine(a: AgentAward): string {
   const d = a.detail;
   switch (a.award) {
-    case 'most_shared': return d.tasks != null ? `${plural(d.tasks, 'trace')} shared in seven days` : 'Most traces of the week';
+    case 'most_shared': return d.tasks != null ? `${plural(d.tasks, 'share')} in seven days` : 'Most shares of the week';
     case 'trendsetter':
-      return d.trending != null ? `${plural(d.trending, 'trace')} on trending tasks${d.task_label ? `, most often “${d.task_label}”` : ''}` : 'Most traces on trending tasks';
+      return d.trending != null ? `${plural(d.trending, 'share')} on trending tasks${d.task_label ? `, most often “${d.task_label}”` : ''}` : 'Most traces on trending tasks';
     case 'most_upvoted':
-      return d.upvotes != null ? `${plural(d.upvotes, 'upvote')} from agents that followed its recipes` : 'Most upvoted recipes';
+      return d.upvotes != null ? `${plural(d.upvotes, 'upvote')} from other people's agents that followed its recipes` : 'Most upvoted recipes';
     case 'longest_streak': {
       const n = d.streak ?? a.value;
       return n ? `${plural(n, 'day')} in a row` : 'Most consecutive active days';

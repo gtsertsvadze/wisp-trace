@@ -5,7 +5,7 @@
 import type { Bindings } from '../env';
 import type { AwardId, AwardRow } from '../types';
 import { RULES } from '../lib/rules';
-import { upvotesByAgent } from '../processing/awards';
+import { upvotesByAgent, weekShares } from '../processing/awards';
 import { cached } from '../processing/snapshots';
 import { trendingTaskIds } from '../processing/trends';
 import { isoWeek, lastCompleteWeek, shiftWeek, weekStart } from '../lib/time';
@@ -26,9 +26,10 @@ export interface AgentBoardRow {
   name: string;
   app: string;
   model: string;               // most used that week
-  owner_handle: string | null; // '@mira'; null for seed agents
-  is_seed: boolean;
-  tasks: number;               // traces shared this week
+  owner_handle: string | null; // '@mira'
+  is_seed: boolean;            // always false: seed agents are never ranked
+  tasks: number;               // traces sent this week
+  shares: number;              // credited shares: one per task per day, at most RULES.SHARES_PER_DAY a day
   success: number;             // 0-100, one decimal
   median_minutes: number;
   trending: number;            // traces on the week's trending tasks
@@ -96,69 +97,65 @@ function medianSql(groupCol: string, extraWhere = ''): string {
     SELECT k, AVG(mins) AS median FROM r WHERE rn IN ((cnt + 1) / 2, (cnt + 2) / 2) GROUP BY k`;
 }
 
-/** Every eligible agent active (or upvoted) in the week, unranked. Shared by the three agent boards. */
+/** Every claimed, non-seed agent active (or upvoted) in the week, unranked. Shared by the three agent boards.
+ *  Seed agents are never ranked: they are Wisptrace's own. */
 function agentWeek(env: Bindings, week: string): Promise<Omit<AgentBoardRow, 'rank'>[]> {
   return cached(env, `board:agent-week:${week}`, CACHE_MS, async () => {
-    const trending = [...await trendingTaskIds(env, week)].slice(0, 80);
-    const trendSql = trending.length ? `COALESCE(SUM(t.task_id IN (${trending.map(() => '?').join(',')})), 0)` : '0';
-    const [agg, med, models] = await env.DB.batch([
-      env.DB.prepare(
-        `SELECT t.agent_id, a.name, a.app, a.owner_handle, a.is_seed, COUNT(*) AS n, COALESCE(SUM(t.outcome = 'done'), 0) AS done,
-                ${trendSql} AS trending
-         FROM traces t JOIN agents a ON a.id = t.agent_id WHERE t.week = ? AND ${ELIGIBLE}
-         GROUP BY t.agent_id ORDER BY n DESC LIMIT 1000`,
-      ).bind(...trending, week),
-      env.DB.prepare(medianSql('t.agent_id')).bind(week),
-      env.DB.prepare(
-        `SELECT t.agent_id, t.model, COUNT(*) AS n FROM traces t JOIN agents a ON a.id = t.agent_id
-         WHERE t.week = ? AND ${ELIGIBLE} GROUP BY t.agent_id, t.model ORDER BY n DESC`,
-      ).bind(week),
+    const trending = await trendingTaskIds(env, week);
+    const [shares, ups, [med, models]] = await Promise.all([
+      weekShares(env, week, trending),
+      upvotesByAgent(env, week),
+      env.DB.batch([
+        env.DB.prepare(medianSql('t.agent_id')).bind(week),
+        env.DB.prepare(
+          `SELECT t.agent_id, t.model, COUNT(*) AS n FROM traces t JOIN agents a ON a.id = t.agent_id
+           WHERE t.week = ? AND ${ELIGIBLE} AND a.is_seed = 0 GROUP BY t.agent_id, t.model ORDER BY n DESC`,
+        ).bind(week),
+      ]),
     ]);
     const medians = new Map((med.results as { k: string; median: number }[]).map(r => [r.k, r.median]));
     const topModel = new Map<string, string>();
     for (const r of models.results as { agent_id: string; model: string; n: number }[]) {
       if (!topModel.has(r.agent_id)) topModel.set(r.agent_id, r.model); // ordered by n desc
     }
-    const ups = await upvotesByAgent(env, week);
-    type AggRow = { agent_id: string; name: string; app: string; owner_handle: string | null; is_seed: number; n: number; done: number; trending: number };
-    const rows = agg.results as AggRow[];
-    const seen = new Set(rows.map(r => r.agent_id));
-    const missing = [...ups.keys()].filter(id => !seen.has(id)).slice(0, 90);
+    const missing = [...ups.keys()].filter(id => !shares.has(id)).slice(0, 90);
     if (missing.length) {
       // Upvoted this week without sharing anything this week: still on the upvote board.
       const { results } = await env.DB.prepare(
-        `SELECT a.id AS agent_id, a.name, a.app, a.model, a.owner_handle, a.is_seed FROM agents a
-         WHERE a.id IN (${missing.map(() => '?').join(',')}) AND ${ELIGIBLE}`,
-      ).bind(...missing).all<Omit<AggRow, 'n' | 'done' | 'trending'> & { model: string }>();
+        `SELECT a.id, a.name, a.app, a.model, a.owner_handle FROM agents a
+         WHERE a.id IN (${missing.map(() => '?').join(',')}) AND ${ELIGIBLE} AND a.is_seed = 0`,
+      ).bind(...missing).all<{ id: string; name: string; app: string; model: string; owner_handle: string | null }>();
       for (const r of results) {
-        rows.push({ ...r, n: 0, done: 0, trending: 0 });
-        topModel.set(r.agent_id, r.model);
+        shares.set(r.id, { id: r.id, name: r.name, app: r.app, owner_handle: r.owner_handle, traces: 0, done: 0, shares: 0, trend_shares: 0, top_trending: null });
+        topModel.set(r.id, r.model);
       }
     }
-    return rows.map(r => ({
+    return [...shares.values()].map(r => ({
       name: r.name,
       app: r.app,
-      model: topModel.get(r.agent_id) ?? 'unknown',
-      owner_handle: r.is_seed ? null : handle(r.owner_handle),
-      is_seed: !!r.is_seed,
-      tasks: r.n,
-      success: pct1(r.done, r.n),
-      median_minutes: Math.round((medians.get(r.agent_id) ?? 1) * 10) / 10,
-      trending: r.trending,
-      upvotes: ups.get(r.agent_id)?.upvotes ?? 0,
+      model: topModel.get(r.id) ?? 'unknown',
+      owner_handle: handle(r.owner_handle),
+      is_seed: false,
+      tasks: r.traces,
+      shares: r.shares,
+      success: pct1(r.done, r.traces),
+      median_minutes: Math.round((medians.get(r.id) ?? 1) * 10) / 10,
+      trending: r.trend_shares,
+      upvotes: ups.get(r.id)?.upvotes ?? 0,
     }));
   });
 }
 
-/** One agent board, ranked: 'agents' = most shared, 'trending' = most on trending tasks, 'upvoted' = most upvotes. */
+/** One agent board, ranked: 'upvoted' = most upvotes (the headline), 'agents' = most shares, 'trending' = most shares
+ *  on trending tasks. */
 export async function agentBoard(env: Bindings, week: string, board: AgentBoard = 'agents'): Promise<AgentBoardRow[]> {
   const all = await agentWeek(env, week);
   const byName = (a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name);
   const rows = board === 'trending'
-    ? all.filter(r => r.trending > 0).sort((a, b) => b.trending - a.trending || b.tasks - a.tasks || byName(a, b))
+    ? all.filter(r => r.trending > 0).sort((a, b) => b.trending - a.trending || b.shares - a.shares || byName(a, b))
     : board === 'upvoted'
-      ? all.filter(r => r.upvotes > 0).sort((a, b) => b.upvotes - a.upvotes || b.tasks - a.tasks || byName(a, b))
-      : all.filter(r => r.tasks >= RULES.BOARD_MIN_TASKS_AGENT).sort((a, b) => b.tasks - a.tasks || b.success - a.success || byName(a, b));
+      ? all.filter(r => r.upvotes > 0).sort((a, b) => b.upvotes - a.upvotes || b.shares - a.shares || byName(a, b))
+      : all.filter(r => r.shares >= RULES.BOARD_MIN_TASKS_AGENT).sort((a, b) => b.shares - a.shares || b.success - a.success || byName(a, b));
   return rows.slice(0, 100).map((r, i) => ({ rank: i + 1, ...r }));
 }
 
@@ -166,7 +163,7 @@ async function groupBoard(env: Bindings, week: string, col: 't.model' | 't.app')
   const known = `AND LOWER(${col}) != 'unknown'`;
   const [agg, med] = await env.DB.batch([
     env.DB.prepare(
-      `SELECT ${col} AS k, COUNT(*) AS n, COALESCE(SUM(t.outcome = 'done'), 0) AS done, COUNT(DISTINCT t.agent_id) AS ag
+      `SELECT ${col} AS k, COUNT(*) AS n, COALESCE(SUM(t.outcome = 'done'), 0) AS done, COUNT(DISTINCT t.owner_key) AS ag
        FROM traces t JOIN agents a ON a.id = t.agent_id WHERE t.week = ? AND ${ELIGIBLE} ${known}
        GROUP BY ${col} HAVING ag >= ? AND n >= ? ORDER BY (done * 1.0 / n) DESC, n DESC, k ASC LIMIT 50`,
     ).bind(week, RULES.BOARD_MIN_AGENTS_GROUP, RULES.BOARD_MIN_TASKS_GROUP),
@@ -189,7 +186,7 @@ export const appBoard = (env: Bindings, week: string) => cached(env, `board:apps
 export function weekSummary(env: Bindings, week: string): Promise<WeekSummary> {
   return cached(env, `board:summary:${week}`, CACHE_MS, async () => {
     const row = await env.DB.prepare(
-      `SELECT COUNT(*) AS n, COUNT(DISTINCT t.agent_id) AS ag FROM traces t JOIN agents a ON a.id = t.agent_id WHERE t.week = ? AND ${ELIGIBLE}`,
+      `SELECT COUNT(*) AS n, COUNT(DISTINCT t.owner_key) AS ag FROM traces t JOIN agents a ON a.id = t.agent_id WHERE t.week = ? AND ${ELIGIBLE}`,
     ).bind(week).first<{ n: number; ag: number }>();
     return { week, tasks: row?.n ?? 0, agents: row?.ag ?? 0 };
   });

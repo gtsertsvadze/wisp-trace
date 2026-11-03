@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { genericDone, nameFromDescription, nameFromTag, nearlySame, similarity } from '../src/lib/tasks';
+import { absorbs, genericDone, nameFromDescription, nameFromTag, sensitiveKind, similarity } from '../src/lib/tasks';
 import { buildTicks, normalizeOutcome, stepSig } from '../src/processing/ingest';
 import { generateAgentName, isReservedName, normalizeAgentName, normalizeApp, normalizeModel, registrableDomain } from '../src/lib/normalize';
 
@@ -32,11 +32,20 @@ describe('task names', () => {
     expect(nameFromTag('Buy a PS5 Slim for £449 delivered by 28/11', 'argos.co.uk')!.label).toBe('Buy a PS5 Slim');
     expect(nameFromTag('Email [NAME] at [EMAIL] about order 88412', null)?.label ?? '').not.toMatch(/NAME|EMAIL|88412/);
   });
-  it('flags sensitive tasks and merges near-identical names', () => {
-    expect(nameFromTag('Book a dentist appointment', null)!.sensitive).toBe(true);
+  it('flags sensitive tasks by category, conservatively but not on everyday words', () => {
+    expect(nameFromTag('Book a dentist appointment', null)!.sensitiveKind).toBe('health');
+    expect(nameFromTag('Apply for a payday loan', null)!.sensitiveKind).toBe('money');
+    expect(sensitiveKind(['fix', 'payments', 'test'])).toBeNull();
+    expect(sensitiveKind(['football', 'match', 'ticket'])).toBeNull();
+  });
+  it('merges one way only, so a public name never carries one person’s extra word', () => {
     const a = nameFromTag('Cancel Fitlane membership', 'fitlane.com')!;
     const b = nameFromDescription('Cancel my gym membership at fitlane.com', 'fitlane.com')!;
-    expect(nearlySame(a, b)).toBe(true);
+    expect(absorbs(a, b)).toBe(true);   // the task "Cancel Fitlane membership" takes in the wordier one
+    expect(absorbs(b, a)).toBe(false);  // never the other way round
+    const mira = nameFromTag('Cancel Mira Netflix subscription', 'netflix.com')!;
+    const plain = nameFromTag('Cancel Netflix subscription', 'netflix.com')!;
+    expect(absorbs(mira, plain)).toBe(false);
     expect(similarity(a, nameFromTag('Book a table', 'fitlane.com')!)).toBe(0);
   });
 });

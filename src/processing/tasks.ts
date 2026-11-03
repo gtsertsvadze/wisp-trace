@@ -1,6 +1,8 @@
 // Tasks: name a trace (the agent's own tag, else the optional LLM, else the description heuristic), find or create
-// its `tasks` row, and keep each task's crowd: the number of different humans behind it (each seed agent counts once).
-// A task's name is public only when its crowd reaches RULES.TASK_PUBLIC_MIN_CROWD.
+// its `tasks` row, and keep each task's crowd: the number of different people behind it. "People" are claimed owners
+// (traces.owner_key, set from the claim, not the API key): several agents of one owner count once; each seed agent
+// counts once. A task's name is public only when its crowd reaches RULES.TASK_PUBLIC_MIN_CROWD, and never when the task
+// or the trace is sensitive.
 import type { Bindings } from '../env';
 import type { AgentRow, Outcome, TaskRow, TaskSource } from '../types';
 import { newId } from '../lib/ids';
@@ -8,7 +10,7 @@ import { llmJson } from '../lib/llm';
 import { RULES } from '../lib/rules';
 import { isCircumvention, sanitizeStepText } from '../lib/sanitize';
 import {
-  fallbackName, genericDone, genericTry, nameFromDescription, nameFromTag, nearlySame, plainVerb, similarity, slugify, type TaskName,
+  absorbs, fallbackName, genericDone, genericTry, nameFromDescription, nameFromTag, plainVerb, similarity, slugify, type TaskName,
 } from '../lib/tasks';
 
 export const isPublicTask = (t: Pick<TaskRow, 'crowd'>) => t.crowd >= RULES.TASK_PUBLIC_MIN_CROWD;
@@ -22,16 +24,20 @@ function wording(t: Named, outcome: Outcome, named: boolean): string {
   return named ? t.label : genericTry(t.verb);
 }
 
-/** Feed wording: the specific name once public. */
-export const publicDone = (t: Named, outcome: Outcome) => wording(t, outcome, isPublicTask(t));
-
-/** Name on a public profile: also hidden for sensitive tasks (a profile is tied to its owner's handle). */
-export const profileDone = (t: Named & Pick<TaskRow, 'sensitive'>, outcome: Outcome) => wording(t, outcome, isPublicTask(t) && !t.sensitive);
+/** Public wording of one trace, on every surface (feed, profile, Atom feed): the specific name only once public, and
+ *  never for a sensitive task or a trace its agent or owner marked sensitive, which read "Booked something". */
+export const publicDone = (t: Named & { sensitive: number }, outcome: Outcome, traceSensitive = 0) =>
+  wording(t, outcome, isPublicTask(t) && !t.sensitive && !traceSensitive);
 
 /** Columns to select (as k.*) next to traces t for every public rendering of a task. */
-export const TASK_COLS = 'k.label AS task_label, k.done_label AS task_done, k.verb AS task_verb, k.crowd AS task_crowd, k.sensitive AS task_sensitive, k.slug AS task_slug';
-export interface TaskCols { task_label: string; task_done: string; task_verb: string; task_crowd: number; task_sensitive: number; task_slug: string }
+export const TASK_COLS = 'k.label AS task_label, k.done_label AS task_done, k.verb AS task_verb, k.crowd AS task_crowd, k.sensitive AS task_sensitive, k.slug AS task_slug, t.sensitive AS trace_sensitive';
+export interface TaskCols { task_label: string; task_done: string; task_verb: string; task_crowd: number; task_sensitive: number; task_slug: string; trace_sensitive: number }
 export const taskOf = (r: TaskCols) => ({ label: r.task_label, done_label: r.task_done, verb: r.task_verb, crowd: r.task_crowd, sensitive: r.task_sensitive, slug: r.task_slug });
+
+/** Who a trace counts as: the claimed owner, or the seed agent itself. Set at ingest from the claim, never the key. */
+export function ownerKey(agent: Pick<AgentRow, 'id' | 'is_seed' | 'owner_handle' | 'owner_platform'>): string {
+  return agent.is_seed || !agent.owner_handle ? `a:${agent.id}` : `o:${agent.owner_platform ?? ''}:${agent.owner_handle.toLowerCase()}`;
+}
 
 /** A name is usable only if it passes the same firewall as recipe text (no instructions, mask labels or evasion). */
 function safe(n: TaskName | null): TaskName | null {
@@ -88,7 +94,8 @@ export async function findOrCreateTask(
   if (!task) {
     const { results } = await db.prepare('SELECT * FROM tasks WHERE verb = ? AND brand = ? ORDER BY traces DESC LIMIT 200')
       .bind(name.verb, name.brand).all<TaskRow>();
-    task = results.find(t => nearlySame(name, { verb: t.verb, brand: t.brand, words: wordsOf(t) })) ?? null;
+    // One-way: a task absorbs a wording only if the wording contains all of the task's words (see absorbs()).
+    task = results.find(t => absorbs({ verb: t.verb, brand: t.brand, words: wordsOf(t) }, name)) ?? null;
   }
   if (task) {
     // A heuristic label gives way to an agent's own wording, and a synonym verb ("Unsubscribe from X") to the plain
@@ -114,15 +121,15 @@ export async function findOrCreateTask(
     for (let n = 2; taken.has(slug); n++) slug = `${base}-${n}`;
     const row: TaskRow = {
       id: newId('tk'), key: name.key, slug, label: name.label, done_label: name.done, label_source: source, verb: name.verb,
-      words: name.words.join(' '), brand: name.brand, site, sensitive: name.sensitive ? 1 : 0, crowd: 0, traces: 0,
+      words: name.words.join(' '), brand: name.brand, site, sensitive: name.sensitive ? 1 : 0, sensitive_kind: name.sensitiveKind, crowd: 0, traces: 0,
       first_seen_at: now, last_seen_at: now,
     };
     try {
       const res = await db.prepare(
-        `INSERT INTO tasks (id, key, slug, label, done_label, label_source, verb, words, brand, site, sensitive, crowd, traces, first_seen_at, last_seen_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?) ON CONFLICT(key) DO NOTHING`,
+        `INSERT INTO tasks (id, key, slug, label, done_label, label_source, verb, words, brand, site, sensitive, sensitive_kind, crowd, traces, first_seen_at, last_seen_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?) ON CONFLICT(key) DO NOTHING`,
       ).bind(row.id, row.key, row.slug, row.label, row.done_label, row.label_source, row.verb, row.words, row.brand, row.site,
-        row.sensitive, now, now).run();
+        row.sensitive, row.sensitive_kind, now, now).run();
       if ((res.meta.changes ?? 0) > 0) return row;
       const raced = await db.prepare('SELECT * FROM tasks WHERE key = ?').bind(name.key).first<TaskRow>();
       if (raced) return raced;
@@ -134,23 +141,16 @@ export async function findOrCreateTask(
   throw new Error('task_create_failed');
 }
 
-/** SQL expression: one value per human (seed agents and owner-less agents count individually). Requires `agents a`. */
-export const CROWD_SQL = "CASE WHEN a.is_seed = 1 OR a.owner_handle IS NULL THEN 'a:' || a.id ELSE 'o:' || COALESCE(a.owner_platform, '') || ':' || a.owner_handle END";
-
-/** True when no trace of this task came from this agent's human yet (so the trace grows the task's crowd). */
-export async function isNewToCrowd(env: Bindings, taskId: string, agent: AgentRow): Promise<boolean> {
-  let ids = [agent.id];
-  if (!agent.is_seed && agent.owner_handle) {
-    const { results } = await env.DB.prepare('SELECT id FROM agents WHERE owner_handle = ? AND COALESCE(owner_platform, \'\') = ? AND is_seed = 0 LIMIT 50')
-      .bind(agent.owner_handle, agent.owner_platform ?? '').all<{ id: string }>();
-    ids = [...new Set([agent.id, ...results.map(r => r.id)])];
-  }
-  const hit = await env.DB.prepare(`SELECT 1 AS x FROM traces WHERE task_id = ? AND agent_id IN (${ids.map(() => '?').join(',')}) LIMIT 1`)
-    .bind(taskId, ...ids).first<{ x: number }>();
+/** True when no trace of this task came from this owner yet (so the trace grows the task's crowd). */
+export async function isNewToCrowd(env: Bindings, taskId: string, owner: string): Promise<boolean> {
+  const hit = await env.DB.prepare('SELECT 1 AS x FROM traces WHERE task_id = ? AND owner_key = ? LIMIT 1').bind(taskId, owner).first<{ x: number }>();
   return !hit;
 }
 
-/** Exact recount of traces and crowd (after deletes, and for every task whose recipes the cron rebuilds). */
+/** Owners who flag a task sensitive before it counts as sensitive everywhere (one owner's flag hides only their trace). */
+const SENSITIVE_FLAGS = 2;
+
+/** Exact recount of traces, crowd and sensitivity (after deletes and flags, and for every task the cron rebuilds). */
 export async function recountTasks(env: Bindings, taskIds: string[]): Promise<void> {
   const ids = [...new Set(taskIds)];
   for (let i = 0; i < ids.length; i += 80) {
@@ -158,8 +158,11 @@ export async function recountTasks(env: Bindings, taskIds: string[]): Promise<vo
     await env.DB.prepare(
       `UPDATE tasks SET
          traces = (SELECT COUNT(*) FROM traces t WHERE t.task_id = tasks.id),
-         crowd = (SELECT COUNT(DISTINCT ${CROWD_SQL}) FROM traces t JOIN agents a ON a.id = t.agent_id
-                  WHERE t.task_id = tasks.id AND a.deleted_at IS NULL)
+         crowd = (SELECT COUNT(DISTINCT t.owner_key) FROM traces t JOIN agents a ON a.id = t.agent_id
+                  WHERE t.task_id = tasks.id AND a.deleted_at IS NULL),
+         sensitive = CASE WHEN sensitive_kind IS NOT NULL
+           OR (SELECT COUNT(DISTINCT t.owner_key) FROM traces t WHERE t.task_id = tasks.id AND t.sensitive = 1) >= ${SENSITIVE_FLAGS}
+           THEN 1 ELSE 0 END
        WHERE id IN (${chunk.map(() => '?').join(',')})`,
     ).bind(...chunk).run();
   }

@@ -6,7 +6,7 @@ import type { AppEnv } from '../env';
 import { agentByOwnerToken } from '../lib/auth';
 import { jsonError } from '../lib/http';
 import {
-  deleteAllOwnerTraces, deleteOwnerAgent, deleteOwnerTrace, getOwnerTrace, listOwnerTraces, ownerTotals,
+  deleteAllOwnerTraces, deleteOwnerAgent, deleteOwnerTrace, getOwnerTrace, listOwnerTraces, ownerTotals, setTraceSensitive,
 } from '../data/owner';
 
 const requireOwner: MiddlewareHandler<AppEnv> = async (c, next) => {
@@ -42,6 +42,15 @@ app.get('/traces/:id', async c => {
   const d = await getOwnerTrace(c.env, c.var.agent.id, c.req.param('id'));
   if (!d) return jsonError(c, 404, 'trace_not_found');
   return c.json({ ok: true, trace: d.trace, raw: d.raw, raw_missing: d.raw_missing });
+});
+
+// Mark a trace sensitive (or not): body { "sensitive": true | false }.
+app.post('/traces/:id/sensitive', async c => {
+  const body = await c.req.json<{ sensitive?: unknown }>().catch(() => null);
+  if (!body || typeof body.sensitive !== 'boolean') return jsonError(c, 400, 'invalid_body', 'Send { "sensitive": true } or { "sensitive": false }.');
+  const ok = await setTraceSensitive(c.env, c.var.agent.id, c.req.param('id'), body.sensitive);
+  if (!ok) return jsonError(c, 404, 'trace_not_found');
+  return c.json({ ok: true, sensitive: body.sensitive });
 });
 
 app.delete('/traces/:id', async c => {

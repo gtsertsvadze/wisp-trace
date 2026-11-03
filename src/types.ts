@@ -15,7 +15,7 @@ export type AwardId =
   | 'most_reliable_model'  // model with the best success rate on the week's most delegated task
   | 'top_app'              // agent app with highest success rate
   | 'longest_streak';      // agent with the longest active streak
-export type TaskSource = 'agent' | 'llm' | 'heuristic';
+export type TaskSource = 'agent' | 'llm' | 'heuristic' | 'recipe'; // 'recipe': the trace followed a recipe of that task
 
 // ---------------------------------------------------------------------------
 // Wire format: what the skill client POSTs to /api/v1/traces (already masked on the agent).
@@ -46,6 +46,7 @@ export interface TraceV1 {
     description: string;        // masked task description
     tag?: string;               // the task's name, as any agent doing the same thing would say it:
                                 // verb + service + object, no personal details. 'Cancel Netflix subscription'
+    sensitive?: boolean;        // the task touches health, legal, money trouble, dating...: never shown next to a handle
     sites?: string[];           // domains or URLs involved
   };
   agent?: { app?: string; app_version?: string; model?: string };
@@ -119,6 +120,8 @@ export interface TraceRow {
   mask_server: number;
   feed_visible_at: number;
   is_seed: number;
+  owner_key: string;      // who the trace counts as: 'o:<platform>:<handle>' (claimed owner) or 'a:<agent id>' (seed agent)
+  sensitive: number;      // marked sensitive by the agent or its owner
 }
 
 /** A specific task, e.g. 'Cancel Netflix subscription'. The name is public only when crowd >= RULES.TASK_PUBLIC_MIN_CROWD. */
@@ -133,8 +136,9 @@ export interface TaskRow {
   words: string;
   brand: string;
   site: string | null;
-  sensitive: number;
-  crowd: number;
+  sensitive: number;             // effective: a sensitive category, or flagged by >= 2 owners
+  sensitive_kind: string | null; // classifier category: 'health' | 'legal' | 'money' | 'dating' | 'beliefs' | 'gambling' | 'loss'
+  crowd: number;                 // distinct owners (each seed agent counts once)
   traces: number;
   first_seen_at: number;
   last_seen_at: number;
@@ -238,14 +242,14 @@ export interface PublicStats {
 // Weekly trends (computed by src/processing/trends.ts, read by the trends page, cards and stat of the day)
 // ---------------------------------------------------------------------------
 export interface TrendTaskWeek {
-  task_id: string;
-  slug: string;
-  label: string;            // public task name, e.g. 'Cancel Netflix subscription'
+  task_id: string;          // or 'cat:<kind>' for sensitive tasks, which trends show only by category
+  slug: string;             // '' for a category row
+  label: string;            // public task name, e.g. 'Cancel Netflix subscription', or 'Health & medical tasks'
   traces: number;
-  agents: number;           // distinct agents this week
+  agents: number;           // distinct people (owners; each seed agent counts once) this week
   prev_traces: number;
   prev_agents: number;
-  multiplier: number | null; // traces / prev_traces, null when prev isn't published or is 0
+  multiplier: number | null; // traces / prev_traces; null unless last week was published with >= RULES.TREND_MIN_BASE traces
   published: boolean;       // agents >= RULES.TREND_MIN_AGENTS (k-anonymity)
   trending: boolean;        // in the week's top RULES.TRENDING_TOP by volume, or grew >= RULES.TRENDING_MIN_MULTIPLIER
 }

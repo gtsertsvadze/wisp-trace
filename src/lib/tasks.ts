@@ -18,6 +18,7 @@ export interface TaskName {
   words: string[];  // sorted canonical content words (brand included when the name mentions it)
   brand: string;    // brand word from the site ('' without a site)
   sensitive: boolean;
+  sensitiveKind: string | null;  // 'health', 'legal', ... (see SENSITIVE_WORDS)
 }
 
 // ---------------------------------------------------------------------------
@@ -211,13 +212,37 @@ const SYNONYMS: Record<string, string> = {
   tix: 'ticket', groceries: 'grocery', supermarket: 'grocery', taxi: 'ride', cab: 'ride', login: 'account', e: '',
 };
 
-const SENSITIVE = new Set(['doctor', 'gp', 'clinic', 'hospital', 'dentist', 'dental', 'pharmacy', 'prescription', 'medication',
-  'medicine', 'therapy', 'therapist', 'counselling', 'counseling', 'psychiatrist', 'psychologist', 'std', 'sti', 'hiv', 'abortion',
-  'pregnancy', 'fertility', 'ivf', 'rehab', 'diagnosis', 'symptom', 'vaccine', 'vaccination', 'lab', 'test', 'scan', 'mri',
-  'lawyer', 'solicitor', 'attorney', 'court', 'divorce', 'custody', 'bail', 'eviction', 'immigration', 'asylum', 'visa', 'police',
-  'debt', 'loan', 'payday', 'bankruptcy', 'overdraft', 'arrears', 'benefit', 'welfare', 'foodbank', 'unemployment', 'credit',
-  'dating', 'tinder', 'hinge', 'bumble', 'grindr', 'church', 'mosque', 'synagogue', 'temple', 'adult', 'escort', 'bet', 'betting',
-  'casino', 'poker', 'gambling', 'funeral', 'condolence']);
+// Sensitive topics, conservatively: a task touching any of these never appears by name next to a handle, and in trends
+// only at category level. Agents can also mark a task sensitive (task.sensitive) and owners can, from the owner link.
+const SENSITIVE_WORDS: Record<string, string[]> = {
+  health: ['doctor', 'gp', 'clinic', 'hospital', 'dentist', 'dental', 'pharmacy', 'chemist', 'prescription', 'medication', 'medicine',
+    'pill', 'therapy', 'therapist', 'counselling', 'counseling', 'counsellor', 'psychiatrist', 'psychologist', 'mental', 'anxiety',
+    'depression', 'adhd', 'autism', 'std', 'sti', 'hiv', 'prep', 'abortion', 'contraception', 'contraceptive', 'condom', 'pregnancy',
+    'fertility', 'ivf', 'rehab', 'addiction', 'diagnosis', 'symptom', 'vaccine', 'vaccination', 'mri', 'xray',
+    'cancer', 'oncology', 'chemo', 'diabetes', 'insulin', 'ozempic', 'wegovy', 'surgery', 'gynaecologist', 'gynecologist',
+    'urologist', 'dermatologist', 'nhs', 'medical', 'health', 'sick', 'disability'],
+  legal: ['lawyer', 'solicitor', 'attorney', 'court', 'divorce', 'custody', 'bail', 'eviction', 'immigration', 'asylum', 'visa',
+    'police', 'probation', 'prison', 'jail', 'arrest', 'lawsuit', 'tribunal', 'restraining'],
+  money: ['debt', 'loan', 'payday', 'bankruptcy', 'overdraft', 'arrears', 'benefit', 'welfare', 'foodbank', 'unemployment',
+    'pawn', 'bailiff', 'repossession', 'insolvency'],
+  dating: ['dating', 'tinder', 'hinge', 'bumble', 'grindr', 'okcupid', 'adult', 'escort', 'sex', 'lgbt', 'lgbtq'],
+  beliefs: ['church', 'mosque', 'synagogue', 'temple', 'prayer', 'religious'],
+  gambling: ['bet', 'betting', 'casino', 'poker', 'gambling', 'lottery', 'bookmaker'],
+  loss: ['funeral', 'condolence', 'bereavement', 'obituary', 'grave', 'cremation', 'probate'],
+};
+const SENSITIVE = new Map(Object.entries(SENSITIVE_WORDS).flatMap(([kind, ws]) => ws.map(w => [w, kind] as const)));
+
+/** The sensitive category of a set of canonical words, or null. */
+export function sensitiveKind(words: string[]): string | null {
+  for (const w of words) { const k = SENSITIVE.get(w); if (k) return k; }
+  return null;
+}
+
+/** Trends show sensitive tasks only by category. */
+export const SENSITIVE_LABEL: Record<string, string> = {
+  health: 'Health & medical tasks', legal: 'Legal tasks', money: 'Debt & benefits tasks', dating: 'Dating tasks',
+  beliefs: 'Faith tasks', gambling: 'Betting tasks', loss: 'Bereavement tasks', other: 'Private tasks',
+};
 
 function singular(w: string): string {
   if (w.length <= 3 || /(ss|us|is|ous)$/.test(w)) return w;
@@ -378,7 +403,8 @@ function finish(d: Draft, site: string | null | undefined): TaskName | null {
     verb,
     words,
     brand: brandInName ? brand : '',
-    sensitive: words.some(w => SENSITIVE.has(w)),
+    sensitive: !!sensitiveKind(words),
+    sensitiveKind: sensitiveKind(words),
   };
 }
 
@@ -400,9 +426,9 @@ export function nameFromDescription(text: string | null | undefined, site?: stri
 export function fallbackName(site?: string | null): TaskName {
   const brand = brandOfSite(site);
   if (brand) {
-    return { key: `use|${brand}`, label: `Use ${brandDisplay(brand)}`, done: `Used ${brandDisplay(brand)}`, verb: 'use', words: [brand], brand, sensitive: false };
+    return { key: `use|${brand}`, label: `Use ${brandDisplay(brand)}`, done: `Used ${brandDisplay(brand)}`, verb: 'use', words: [brand], brand, sensitive: false, sensitiveKind: null };
   }
-  return { key: '|web task', label: 'Web task', done: 'Did a web task', verb: '', words: ['task', 'web'], brand: '', sensitive: false };
+  return { key: '|web task', label: 'Web task', done: 'Did a web task', verb: '', words: ['task', 'web'], brand: '', sensitive: false, sensitiveKind: null };
 }
 
 export function slugify(s: string): string {
@@ -424,13 +450,17 @@ export function similarity(a: Pick<TaskName, 'verb' | 'words' | 'brand'>, b: Pic
   return inter / (A.size + B.size - inter);
 }
 
-/** Near-identical: same verb and brand, and one word set contains the other with at most one extra word. */
-export function nearlySame(a: Pick<TaskName, 'verb' | 'words' | 'brand'>, b: Pick<TaskName, 'verb' | 'words' | 'brand'>): boolean {
-  if (a.verb !== b.verb || a.brand !== b.brand) return false;
-  const [small, big] = a.words.length <= b.words.length ? [a.words, b.words] : [b.words, a.words];
-  if (!small.length || big.length - small.length > 1) return false;
-  const B = new Set(big);
-  return small.every(w => B.has(w));
+/**
+ * Whether an existing task may absorb a new wording: same verb and brand, and the wording contains every word of the
+ * task plus at most one more ("Cancel gym membership on Fitlane" joins "Cancel Fitlane membership"). Never the other
+ * way round: a task never takes on a word only some of its people used, so every word of a public name was used by
+ * every person counted toward it.
+ */
+export function absorbs(task: Pick<TaskName, 'verb' | 'words' | 'brand'>, name: Pick<TaskName, 'verb' | 'words' | 'brand'>): boolean {
+  if (task.verb !== name.verb || task.brand !== name.brand) return false;
+  if (!task.words.length || name.words.length - task.words.length > 1 || name.words.length < task.words.length) return false;
+  const N = new Set(name.words);
+  return task.words.every(w => N.has(w));
 }
 
 /** Third person for captions: 'Cancel Netflix subscription' -> 'cancels Netflix subscriptions'... kept simple. */

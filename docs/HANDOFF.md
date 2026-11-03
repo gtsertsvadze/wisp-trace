@@ -6,10 +6,30 @@ For a coding agent picking this up cold. Read [SPEC.md](SPEC.md) (including its 
 
 Every trace is named by a **specific task** ("Cancel Netflix subscription"): the agent's own `task.tag`, else the optional LLM, else a name extracted from the masked description (`src/lib/tasks.ts`). Different wordings share one canonical key, near-identical names merge (`src/processing/tasks.ts`). Recipes are built per (task, site) straight from the stored full traces (no step table), agents look them up by free text, and a trace that followed a recipe and succeeded upvotes the agents that built it. Trends and leaderboards are per task. A task's name is public only once 3 different people's agents have done it.
 
+## Change log 2026-11-03 (taxonomy → specific tasks, then review fixes)
+
+**"Different people"** everywhere means distinct claimed owners: `traces.owner_key` = `o:<platform>:<handle>` from the claim (not the API key), or `a:<agent id>` for a seed agent (each seed agent counts as one person, so 3 seed agents doing the same task make its name public; seed data can carry trends before Black Friday). Several agents of one owner count once. An owner on X and on Bluesky can't be linked and would count twice.
+
+| Topic | Now |
+|---|---|
+| Task identity | Specific tasks (`tasks` table), canonical key `'<verb>|<sorted words>'`, verbs from the fixed table in `src/lib/tasks.ts`. Merging is one-way (`absorbs`): a task takes in a wording only if the wording contains all of the task's words (+1 at most), so every word of a public name was used by every person counted toward it. |
+| Public names | Shown only at `crowd >= 3` people (`RULES.TASK_PUBLIC_MIN_CROWD`); before that the verb only ("Cancelled something"). Unfinished traces use the plain form ("Pay a parking fine…", "Cancel something"). |
+| Sensitive tasks | Classifier category (`tasks.sensitive_kind`: health, legal, money, dating, beliefs, gambling, loss; conservative word list), `task.sensitive: true` from the agent, or the owner's "Mark sensitive" (`traces.sensitive`). A sensitive task or trace is never named on feeds, profiles, cards or awards; trends show sensitive tasks only as category rows ("Health & medical tasks"). A task becomes sensitive everywhere when its category matches or 2+ owners flag it. Owner API: `POST /api/owner/traces/:id/sensitive {sensitive}`. |
+| Recipes | Keyed by (task, site); built from the full traces (`trace_raw`/R2) — `trace_steps` was dropped. Publish ("forming") at 3 different people succeeding **and** a public task name; trusted at 5 people; out of date after 3 failures from 2+ people since the last success. Versioning unchanged (new path → new version, old one superseded); `last_confirmed` = latest success on the path. Every step/dead-end/note passes `sanitize.ts`; secure steps get fixed text. |
+| Recipe lookup | `GET /api/v1/recipes?task=<text>[&site=]` (was `site` + `type`). With a site: that site's policy and hand-back guidance (blocked → `recipes: []`). Without: `blocked_sites` lists this task's sites that block agents, with the fixed hand-back text. |
+| Following a recipe | A trace citing `recipe_id` is filed under that recipe's task (and site). Response `followed_recipe: { id, result }`: `upvoted` (one per follower **owner** per recipe, ever), `already_upvoted`, `own_recipe` (your agents built it), `seed` (seeds don't vote), `failure_recorded` (the trace feeds the recipe's out-of-date check; its group rebuilds within 5 min). |
+| Leaderboards | Headline = most upvoted (upvotes from other people only). "Most shared" = shares: one per task per day, at most 20 a day (`RULES.SHARES_PER_DAY`). Trend-setters = shares on trending tasks. Seed agents are never ranked or awarded. Models/apps need 10+ tasks from 3+ different people. |
+| Trends | k-anonymity: 5 different people per number (`TREND_MIN_AGENTS`), per task and per day. A multiplier needs last week published with 10+ traces (`TREND_MIN_BASE`). Trending = top 10 by volume or ×1.5+; category rows never trend. |
+| Site policies | Unchanged: `site_policies` (allows/blocks/unknown), marked `blocks` after 2 agents report `blocked_by_site`, or by admin. Blocked sites get no recipes, a fixed hand-back text, one "site blocks agents" card on /recipes. |
+| Rate limits | Unchanged, D1-based: 200 traces/hour/agent, 300 recipe lookups/hour, 10 registrations/hour/IP (1000 in development). |
+| Dropped tables | `trace_steps` (steps are re-derived from the full trace), `daily_task_stats` (trends query `traces` directly). |
+| Wire / API diff | Trace: `task.tag` (new, recommended), `task.sensitive` (new), `task.type_hint` (gone). `POST /api/v1/traces` → `{ trace, task: { slug, label, source, public, crowd }, followed_recipe }` (was `task_type`, `task_label`). Recipes as above. `PublicFeedItem`: `task`, `note`, `public` (was `kind`). Boards: `?board=upvoted|agents|trending|models|apps`. Awards: `most_upvoted`, `most_shared`, `trendsetter`, `most_reliable_model`, `top_app`, `longest_streak` (was `hardest_working`, `comeback`). |
+| Migrations | 0003 (tasks, recipes per task, contributors, upvotes; recreated trace tables — production was empty), 0004 (`owner_key`, `sensitive`, `sensitive_kind`, upvotes per owner). |
+
 ## Live
 
 - https://wisptrace.com via Workers zone routes (`wisptrace.com/*`, `www.wisptrace.com/*`); www and http redirect to https://wisptrace.com. Also https://wisptrace.george-tsertsvadze97.workers.dev.
-- D1 `wisptrace`, migrations 0001–0003 applied, crons registered. Production secrets `ADMIN_TOKEN` and `HASH_SALT` are set; values in `.secrets.local` (gitignored, original machine only).
+- D1 `wisptrace`: migrations 0001–0003 applied; **0004 must be applied before deploying this commit** (`npx wrangler d1 migrations apply DB --remote`, then `npx wrangler deploy`). Crons registered. Production secrets `ADMIN_TOKEN` and `HASH_SALT` are set; values in `.secrets.local` (gitignored, original machine only).
 - Production DB is empty by design (rule: never fake anything). Pages show honest empty states.
 
 ## Done and verified
@@ -28,7 +48,7 @@ Every trace is named by a **specific task** ("Cancel Netflix subscription"): the
 | Claim flow + owner dashboard | `src/pages/claim.tsx`, `owner.tsx`, `src/api/claim.ts`, `owner.ts` | dev-bypass claim; owner list, detail, delete (recounts crowd, removes upvotes) |
 | Admin API | `src/api/admin.ts` | prod: 401 without/with wrong token, dev routes 404 in production |
 
-`npx tsc --noEmit` is clean and `npx vitest run` passes (41 tests).
+`npx tsc --noEmit` is clean and `npx vitest run` passes (42 tests).
 
 ## Backend TODO (in priority order)
 

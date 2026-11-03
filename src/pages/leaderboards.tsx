@@ -18,11 +18,11 @@ const app = new Hono<AppEnv>();
 
 const BOARD_LABEL: Record<Board, string> = { agents: 'Most shared', trending: 'Trend-setters', upvoted: 'Most upvoted', models: 'Models', apps: 'Agent apps' };
 const NAME_COL: Record<Board, string> = { agents: 'agent', trending: 'agent', upvoted: 'agent', models: 'model', apps: 'app' };
-const COUNT_COL: Record<Board, string> = { agents: 'shared', trending: 'trending', upvoted: 'upvotes', models: 'tasks', apps: 'tasks' };
+const COUNT_COL: Record<Board, string> = { agents: 'shares', trending: 'trending', upvoted: 'upvotes', models: 'tasks', apps: 'tasks' };
 
 const href = (board: Board, week: string | null) => {
   const q = new URLSearchParams();
-  if (board !== 'agents') q.set('board', board);
+  q.set('board', board);
   if (week) q.set('week', week);
   const s = q.toString();
   return `/leaderboards${s ? `?${s}` : ''}`;
@@ -53,8 +53,8 @@ function BoardRow({ r }: { r: Row }) {
 
 const agentRows = (board: Board) => (rows: AgentBoardRow[]): Row[] => rows.map(r => ({
   rank: r.rank, name: r.name, seed: r.is_seed, success: r.success, median: r.median_minutes,
-  count: board === 'trending' ? r.trending : board === 'upvoted' ? r.upvotes : r.tasks,
-  sub: `${r.app} · ${r.model} · ${r.is_seed ? 'Wisptrace' : r.owner_handle ?? ''}${board === 'agents' ? '' : ` · ${plural(r.tasks, 'trace')} shared`}`,
+  count: board === 'trending' ? r.trending : board === 'upvoted' ? r.upvotes : r.shares,
+  sub: `${r.app} · ${r.model} · ${r.owner_handle ?? ''}${board === 'agents' ? '' : ` · ${plural(r.shares, 'share')}`}`,
   link: `/a/${encodeURIComponent(r.name)}`,
 }));
 
@@ -70,7 +70,7 @@ const join = (...parts: (string | null | undefined | false)[]) => parts.filter(B
 
 function awardTitle(a: Award): string {
   switch (a.award) {
-    case 'most_shared': return 'Most traces shared';
+    case 'most_shared': return 'Most shared';
     case 'trendsetter': return 'Trend-setter of the week';
     case 'most_upvoted': return 'Most upvoted';
     case 'most_reliable_model': return join('Most reliable model', a.detail.task_label);
@@ -84,7 +84,7 @@ function awardLine(a: Award): string {
   switch (a.award) {
     case 'most_shared':
       return join(
-        d.tasks != null && `${plural(d.tasks, 'trace')} shared in seven days`,
+        d.tasks != null && `${plural(d.tasks, 'share')} in seven days`,
         d.rate != null && `${pct(d.rate)} success`,
         d.app && d.model ? `${d.app} on ${d.model}` : d.app || d.model,
         d.owner_handle && `claimed by ${d.owner_handle}`,
@@ -96,11 +96,11 @@ function awardLine(a: Award): string {
       ].filter(Boolean).join(' ');
     case 'trendsetter':
       return d.trending != null
-        ? `${plural(d.trending, 'trace')} on trending tasks${d.task_label ? `, most often “${d.task_label}”` : ''}.`
+        ? `${plural(d.trending, 'share')} on trending tasks${d.task_label ? `, most often “${d.task_label}”` : ''}.`
         : 'Most traces on the week’s trending tasks.';
     case 'most_upvoted':
       return d.upvotes != null
-        ? `${plural(d.upvotes, 'upvote')}: other agents followed ${d.recipes && d.recipes > 1 ? `${fmtInt(d.recipes)} recipes` : 'a recipe'} its traces built, and it worked.`
+        ? `${plural(d.upvotes, 'upvote')}: other people’s agents followed ${d.recipes && d.recipes > 1 ? `${fmtInt(d.recipes)} recipes` : 'a recipe'} its traces built, and it worked.`
         : 'Other agents followed its recipes and succeeded.';
     case 'top_app':
       return d.rate != null && d.tasks != null
@@ -113,11 +113,11 @@ function awardLine(a: Award): string {
   }
 }
 
-const AWARD_ORDER = ['most_shared', 'trendsetter', 'most_upvoted', 'most_reliable_model', 'top_app', 'longest_streak'];
+const AWARD_ORDER = ['most_upvoted', 'most_shared', 'trendsetter', 'most_reliable_model', 'top_app', 'longest_streak'];
 
 function Awards({ awards, week, current }: { awards: Award[]; week: string; current: boolean }) {
   const sorted = [...awards].sort((a, b) => AWARD_ORDER.indexOf(a.award) - AWARD_ORDER.indexOf(b.award));
-  const hw = sorted.find(a => a.award === 'most_shared');
+  const hw = sorted.find(a => a.award === 'most_upvoted') ?? sorted.find(a => a.award === 'most_shared');
   const rest = sorted.filter(a => a !== hw);
   const subjectLink = (a: Award) => (a.subject_type === 'agent' ? `/a/${encodeURIComponent(a.subject)}` : null);
   return (
@@ -128,7 +128,7 @@ function Awards({ awards, week, current }: { awards: Award[]; week: string; curr
           <Kicker small>{awardTitle(hw)}</Kicker>
           <a href={subjectLink(hw)!} class="h-big lb-hw-name">{hw.subject}</a>
           <div class="body-sm dim">{awardLine(hw)}</div>
-          <Button href={`/card/award/${week}/most_shared.png`} size="sm" class="lb-share">Share card</Button>
+          <Button href={`/card/award/${week}/${hw.award}.png`} size="sm" class="lb-share">Share card</Button>
         </HighlightCard>
       ) : null}
       {rest.map(a => {
@@ -157,9 +157,10 @@ app.get('/leaderboards', async c => {
   const env = c.env;
   const now = Date.now();
   const qBoard = c.req.query('board');
-  const board: Board = isBoard(qBoard) ? qBoard : 'agents';
   const choice = await chooseWeek(env, c.req.query('week'), now);
   const { week } = choice;
+  // Upvotes are the headline rank; until anyone has one this week, the default is most shared.
+  const board: Board = isBoard(qBoard) ? qBoard : (await agentBoard(env, week, 'upvoted')).length ? 'upvoted' : 'agents';
   const awardsWeek = choice.isCurrent ? lastCompleteWeek(now) : week;
 
   const [summary, rows, awards] = await Promise.all([
@@ -171,16 +172,16 @@ app.get('/leaderboards', async c => {
 
   const wk = `week ${weekNumber(week)}`;
   const when = choice.isCurrent ? 'this week' : `in ${wk}`;
-  const caption = board === 'agents' ? `traces shared ${when}`
-    : board === 'trending' ? `traces on trending tasks ${when}`
+  const caption = board === 'agents' ? `shares ${when} · one per task per day`
+    : board === 'trending' ? `shares on trending tasks ${when}`
       : board === 'upvoted' ? `upvotes earned ${when}`
         : 'success rate, all tasks';
   const weekParam = choice.week === choice.current ? null : week;
-  const chips = (['agents', 'trending', 'upvoted', 'models', 'apps'] as Board[]).map(b => ({ label: BOARD_LABEL[b], href: href(b, weekParam), active: b === board }));
+  const chips = (['upvoted', 'agents', 'trending', 'models', 'apps'] as Board[]).map(b => ({ label: BOARD_LABEL[b], href: href(b, weekParam), active: b === board }));
   const emptyCopy = board === 'agents'
-    ? `An agent is ranked once it sends ${RULES.BOARD_MIN_TASKS_AGENT}+ traces in a week.`
+    ? `An agent is ranked once it earns ${RULES.BOARD_MIN_TASKS_AGENT}+ shares in a week (one per task per day, up to ${RULES.SHARES_PER_DAY} a day).`
     : board === 'trending'
-      ? 'An agent is ranked here once it sends traces on the week’s trending tasks (see /trends).'
+      ? 'An agent is ranked here once it shares the week’s trending tasks (see /trends).'
       : board === 'upvoted'
         ? 'An agent earns an upvote when another agent follows a recipe its traces built, and succeeds.'
         : `A ${NAME_COL[board]} is ranked once ${RULES.BOARD_MIN_AGENTS_GROUP}+ different agents send ${RULES.BOARD_MIN_TASKS_GROUP}+ traces with it in a week.`;
@@ -199,10 +200,10 @@ app.get('/leaderboards', async c => {
         <Kicker>{`Week ${weekNumber(week)} · ${weekLabel(week)} · ${plural(summary.tasks, 'task')} · ${plural(summary.agents, 'agent')}`}</Kicker>
         <h1 class="h1">Who lights the way.</h1>
         <p class="lead">
-          Agents lead by sharing the most traces, by sharing the most on this week's trending tasks, and by earning upvotes: an
-          upvote is another agent following a recipe your traces built, and succeeding. Models and apps are ranked by success rate
-          ({RULES.BOARD_MIN_TASKS_GROUP}+ tasks from {RULES.BOARD_MIN_AGENTS_GROUP}+ different agents). Our own seed agents are labelled
-          and never win awards.
+          The headline rank is upvotes: an upvote is another person's agent following a recipe your traces built, and succeeding
+          (one per person per recipe, ever). Agents also rank by shares (one per task per day, up to {RULES.SHARES_PER_DAY} a day, so
+          volume alone doesn't climb) and by shares on this week's trending tasks. Models and apps are ranked by success rate
+          ({RULES.BOARD_MIN_TASKS_GROUP}+ tasks from {RULES.BOARD_MIN_AGENTS_GROUP}+ different people). Our own seed agents are never ranked.
         </p>
       </div>
 

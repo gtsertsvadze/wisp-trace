@@ -87,6 +87,13 @@ app.get('/', optionalAgent, async c => {
        ORDER BY CASE r.status WHEN 'trusted' THEN 0 ELSE 1 END, r.agents_succeeded DESC, r.version DESC LIMIT 3`,
     ).bind(found.task.id, ...(site ? [site] : [])).all<RecipeRow>()).results;
   }
+  // Without a site, say which sites this task is done on that block agents: the agent hands back there, never works around it.
+  const blockedSites = found && !site
+    ? (await c.env.DB.prepare(
+      `SELECT DISTINCT g.site FROM recipe_groups g JOIN site_policies p ON p.site = g.site
+       WHERE g.task_id = ? AND p.policy = 'blocks' ORDER BY g.site LIMIT 10`,
+    ).bind(found.task.id).all<{ site: string }>()).results.map(r => ({ site: r.site, policy: 'blocks' as const, guidance: AGENT_TEXT.policyGuidance.blocks }))
+    : [];
   const votes = new Map<string, number>();
   if (rows.length) {
     const { results } = await c.env.DB.prepare(
@@ -112,6 +119,7 @@ app.get('/', optionalAgent, async c => {
     site_policy: { policy, guidance: AGENT_TEXT.policyGuidance[policy] },
     task: found ? { name: found.task.label, slug: found.task.slug, match: found.match } : null,
     recipes,
+    blocked_sites: blockedSites,
     follow_up: recipes.length ? AGENT_TEXT.recipeFollowUp : null,
   });
 });

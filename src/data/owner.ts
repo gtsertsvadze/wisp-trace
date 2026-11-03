@@ -35,7 +35,9 @@ export interface OwnerTraceItem {
   task: string;           // the specific task name, e.g. 'Cancel Netflix subscription' (the owner always sees it)
   task_public: boolean;   // shown by name on public pages yet
   task_crowd: number;     // different people's agents behind it
-  task_source: TaskSource; // 'agent' (its own tag) | 'llm' | 'heuristic' (from the description)
+  task_source: TaskSource; // 'agent' (its own tag) | 'llm' | 'heuristic' (from the description) | 'recipe' (it followed one)
+  task_sensitive: boolean; // the task counts as sensitive everywhere (category, or flagged by 2+ owners)
+  sensitive: boolean;      // this trace was marked sensitive (by the agent or by you)
   task_text: string | null;
   site: string | null;
   sites: string[];
@@ -64,14 +66,14 @@ export interface OwnerTraceDetail {
 
 interface TraceDbRow {
   id: string; received_at: number; occurred_at: number; started_at: number | null; ended_at: number | null;
-  task_id: string; task_source: TaskSource; task_label: string; task_crowd: number; task_text: string | null; site: string | null; sites_json: string | null;
+  task_id: string; task_source: TaskSource; task_label: string; task_crowd: number; task_sens: number; sensitive: number; task_text: string | null; site: string | null; sites_json: string | null;
   outcome: Outcome; fail_reason: string | null; blocked_by_site: number; steps_count: number; ticks: string;
   duration_s: number | null; cost_usd: number | null; model: string; app: string; recipe_id: string | null;
   raw_key: string | null; raw_bytes: number | null; mask_client: number; mask_server: number;
 }
 
 const TRACE_COLS = `t.id, t.received_at, t.occurred_at, t.started_at, t.ended_at, t.task_id, t.task_source, k.label AS task_label,
-  k.crowd AS task_crowd, t.task_text, t.site, t.sites_json, t.outcome, t.fail_reason, t.blocked_by_site, t.steps_count, t.ticks,
+  k.crowd AS task_crowd, k.sensitive AS task_sens, t.sensitive, t.task_text, t.site, t.sites_json, t.outcome, t.fail_reason, t.blocked_by_site, t.steps_count, t.ticks,
   t.duration_s, t.cost_usd, t.model, t.app, t.recipe_id, t.raw_key, t.raw_bytes, t.mask_client, t.mask_server`;
 const FROM = 'FROM traces t JOIN tasks k ON k.id = t.task_id';
 
@@ -97,6 +99,8 @@ function toItem(r: TraceDbRow): OwnerTraceItem {
     task_public: r.task_crowd >= RULES.TASK_PUBLIC_MIN_CROWD,
     task_crowd: r.task_crowd,
     task_source: r.task_source,
+    task_sensitive: !!r.task_sens,
+    sensitive: !!r.sensitive,
     task_text: r.task_text,
     site: r.site,
     sites: parseSites(r.sites_json),
@@ -237,6 +241,19 @@ function groupStatements(env: Bindings, groups: Map<string, number>): D1Prepared
 
 const counterDecrement = (env: Bindings, n: number) =>
   env.DB.prepare("UPDATE counters SET value = MAX(0, value - ?) WHERE key = 'traces_total'").bind(n);
+
+/**
+ * Mark (or unmark) one of the agent's traces sensitive. The task's name then never shows next to this agent's handle;
+ * once 2 different owners flag the same task, it counts as sensitive everywhere. Returns false when it isn't this agent's.
+ */
+export async function setTraceSensitive(env: Bindings, agentId: string, traceId: string, sensitive: boolean): Promise<boolean> {
+  if (!isTraceId(traceId)) return false;
+  const row = await env.DB.prepare('SELECT task_id FROM traces WHERE id = ? AND agent_id = ?').bind(traceId, agentId).first<{ task_id: string }>();
+  if (!row) return false;
+  await env.DB.prepare('UPDATE traces SET sensitive = ? WHERE id = ? AND agent_id = ?').bind(sensitive ? 1 : 0, traceId, agentId).run();
+  await recountTasks(env, [row.task_id]);
+  return true;
+}
 
 /** Delete one trace. Returns false when it isn't this agent's. */
 export async function deleteOwnerTrace(env: Bindings, agentId: string, traceId: string): Promise<boolean> {

@@ -11,7 +11,7 @@ import { fmtHM, fmtInt, fmtUsd, outcomeLabel, pad2 } from '../lib/format';
 import { RULES } from '../lib/rules';
 import { ago } from '../lib/time';
 import {
-  deleteAllOwnerTraces, deleteOwnerAgent, deleteOwnerTrace, getOwnerTrace, isTraceId, listOwnerTraces, ownerTotals,
+  deleteAllOwnerTraces, deleteOwnerAgent, deleteOwnerTrace, getOwnerTrace, isTraceId, listOwnerTraces, ownerTotals, setTraceSensitive,
   type OwnerTraceDetail, type OwnerTraceItem, type OwnerTotals,
 } from '../data/owner';
 import { Layout, page } from './layout';
@@ -259,6 +259,21 @@ function Detail({ d, token }: { d: OwnerTraceDetail; token: string }) {
               {facts.map(([k, v]) => <><dt class="th">{k}</dt><dd>{v}</dd></>)}
             </dl>
           </div>
+          <div class="card">
+            <Kicker small tone="mute">Sensitive</Kicker>
+            <p class="body-sm">
+              {t.sensitive
+                ? 'Marked sensitive: this task never shows by name next to your agent, anywhere.'
+                : t.task_sensitive
+                  ? 'This task already counts as sensitive: it never shows by name next to any agent.'
+                  : 'Health, legal, money or anything private? Mark it, and its name never shows next to your agent. When two people mark the same task, it is hidden by name everywhere.'}
+            </p>
+            <form method="post" action={`${base(token)}/sensitive`}>
+              <input type="hidden" name="id" value={t.id} />
+              <input type="hidden" name="sensitive" value={t.sensitive ? 'no' : 'yes'} />
+              <button type="submit" class="btn btn-secondary btn-sm">{t.sensitive ? 'Unmark sensitive' : 'Mark sensitive'}</button>
+            </form>
+          </div>
           <div class="card card-coral ow-danger">
             <Kicker small tone="coral">Delete</Kicker>
             <p class="body-sm">Removes this trace and its stored full JSON for good. Recipes, task counts and upvotes rebuild without it.</p>
@@ -396,6 +411,17 @@ app.get('/owner/:token', async c => {
   const agent = await agentByOwnerToken(c.env, token);
   if (!agent) return notFoundPage(c);
   return ownerPage(c, token, agent);
+});
+
+// Mark / unmark a trace sensitive (plain form POST).
+app.post('/owner/:token/sensitive', async c => {
+  privateHeaders(c);
+  const token = c.req.param('token');
+  const agent = await agentByOwnerToken(c.env, token);
+  if (!agent) return notFoundPage(c);
+  const form = await c.req.parseBody().catch(() => ({} as Record<string, unknown>));
+  if (typeof form.id === 'string') await setTraceSensitive(c.env, agent.id, form.id, form.sensitive === 'yes');
+  return c.redirect(`${base(token)}?trace=${typeof form.id === 'string' ? encodeURIComponent(form.id) : ''}`, 303);
 });
 
 // No-JS fallback for the delete buttons (owner.js uses the DELETE API instead).

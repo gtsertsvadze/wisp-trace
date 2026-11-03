@@ -74,11 +74,11 @@ async function shoppingWatch(env: Bindings, week: string): Promise<ShoppingWatch
   if (baselineDays < 7) return none;
   const [wk, base] = await Promise.all([
     env.DB.prepare(
-      `SELECT COUNT(*) AS n, COUNT(DISTINCT t.agent_id) AS agents FROM traces t JOIN agents a ON a.id = t.agent_id
+      `SELECT COUNT(*) AS n, COUNT(DISTINCT t.owner_key) AS agents FROM traces t JOIN agents a ON a.id = t.agent_id
        WHERE t.week = ? AND ${SHOPPING_SQL} AND ${ELIGIBLE}`,
     ).bind(week).first<{ n: number; agents: number }>(),
     env.DB.prepare(
-      `SELECT COUNT(*) AS n, COUNT(DISTINCT t.agent_id) AS agents FROM traces t JOIN agents a ON a.id = t.agent_id
+      `SELECT COUNT(*) AS n, COUNT(DISTINCT t.owner_key) AS agents FROM traces t JOIN agents a ON a.id = t.agent_id
        WHERE t.day >= ? AND t.day < ? AND ${SHOPPING_SQL} AND ${ELIGIBLE}`,
     ).bind(dayOf(OCT_FROM), dayOf(baselineEnd)).first<{ n: number; agents: number }>(),
   ]);

@@ -59,15 +59,67 @@ function groupBy(rows: WeekRow[], key: (r: WeekRow) => string) {
 
 const groupOk = (g: { n: number; agents: Set<string> }) => g.agents.size >= RULES.BOARD_MIN_AGENTS_GROUP && g.n >= RULES.BOARD_MIN_TASKS_GROUP;
 
-/** Upvotes earned per agent in `week` (votes on recipes it contributed to, never its own). */
+/** Upvotes earned per agent in `week`: votes from other people (never seed agents, never the contributor's own owner)
+ *  on recipes the agent contributed to. Only claimed, non-seed agents earn them. */
 export async function upvotesByAgent(env: Bindings, week: string): Promise<Map<string, { upvotes: number; recipes: number }>> {
   const { results } = await env.DB.prepare(
     `SELECT c.agent_id, COUNT(*) AS n, COUNT(DISTINCT u.recipe_id) AS recipes
-     FROM upvotes u JOIN recipe_contributors c ON c.recipe_id = u.recipe_id AND c.agent_id != u.voter_id
+     FROM upvotes u JOIN recipe_contributors c ON c.recipe_id = u.recipe_id
      JOIN agents a ON a.id = c.agent_id
-     WHERE u.week = ? AND ${ELIGIBLE} GROUP BY c.agent_id`,
+     WHERE u.week = ? AND u.voter_owner LIKE 'o:%' AND a.deleted_at IS NULL AND a.claim_status = 'claimed' AND a.is_seed = 0
+       AND u.voter_owner != 'o:' || COALESCE(a.owner_platform, '') || ':' || LOWER(COALESCE(a.owner_handle, ''))
+     GROUP BY c.agent_id`,
   ).bind(week).all<{ agent_id: string; n: number; recipes: number }>();
   return new Map(results.map(r => [r.agent_id, { upvotes: r.n, recipes: r.recipes }]));
+}
+
+export interface AgentShares {
+  id: string; name: string; app: string; owner_handle: string | null;
+  traces: number;        // raw traces sent
+  done: number;
+  shares: number;        // credited: one per task per day, at most RULES.SHARES_PER_DAY a day
+  trend_shares: number;  // the same, counting only the week's trending tasks
+  top_trending: string | null; // its most frequent trending task id
+}
+
+/**
+ * Credited shares per claimed, non-seed agent for `week`. Volume can't buy rank: sending the same task 50 times in a day
+ * is one share, and no day is worth more than RULES.SHARES_PER_DAY. Breadth (different tasks, every day) is what counts.
+ */
+export async function weekShares(env: Bindings, week: string, trending: Set<string>): Promise<Map<string, AgentShares>> {
+  const { results } = await env.DB.prepare(
+    `SELECT t.agent_id, t.day, t.task_id, COUNT(*) AS n, COALESCE(SUM(t.outcome = 'done'), 0) AS done,
+            MIN(a.name) AS name, MIN(a.app) AS app, MIN(a.owner_handle) AS owner_handle
+     FROM traces t JOIN agents a ON a.id = t.agent_id
+     WHERE t.week = ? AND a.deleted_at IS NULL AND a.claim_status = 'claimed' AND a.is_seed = 0
+     GROUP BY t.agent_id, t.day, t.task_id`,
+  ).bind(week).all<{ agent_id: string; day: string; task_id: string; n: number; done: number; name: string; app: string; owner_handle: string | null }>();
+  const out = new Map<string, AgentShares>();
+  const days = new Map<string, { tasks: number; trend: number }>();
+  const trendCount = new Map<string, Map<string, number>>();
+  for (const r of results) {
+    let a = out.get(r.agent_id);
+    if (!a) out.set(r.agent_id, (a = { id: r.agent_id, name: r.name, app: r.app, owner_handle: r.owner_handle, traces: 0, done: 0, shares: 0, trend_shares: 0, top_trending: null }));
+    a.traces += r.n;
+    a.done += r.done;
+    const k = `${r.agent_id}|${r.day}`;
+    const d = days.get(k) ?? { tasks: 0, trend: 0 };
+    d.tasks++;
+    if (trending.has(r.task_id)) {
+      d.trend++;
+      const m = trendCount.get(r.agent_id) ?? new Map<string, number>();
+      m.set(r.task_id, (m.get(r.task_id) ?? 0) + 1);
+      trendCount.set(r.agent_id, m);
+    }
+    days.set(k, d);
+  }
+  for (const [k, d] of days) {
+    const a = out.get(k.slice(0, k.indexOf('|')))!;
+    a.shares += Math.min(RULES.SHARES_PER_DAY, d.tasks);
+    a.trend_shares += Math.min(RULES.SHARES_PER_DAY, d.trend);
+  }
+  for (const [id, m] of trendCount) out.get(id)!.top_trending = [...m].sort((x, y) => y[1] - x[1])[0]?.[0] ?? null;
+  return out;
 }
 
 /** Compute and store all awards for `week`. Returns the number of awards written. */
@@ -99,19 +151,24 @@ export async function computeAwards(env: Bindings, week: string, now = Date.now(
   const agentAward = (award: AwardId, a: Pick<AgentWeek, 'id' | 'name' | 'seed' | 'model' | 'app'>, value: number, detail: Record<string, unknown>) =>
     out.push({ award, subject_type: 'agent', subject: a.name, agent_id: a.id, value, detail_json: JSON.stringify({ seed: a.seed, model: a.model, app: a.app, week_label: weekLabel(week), ...detail }) });
 
-  // most_shared: most traces (tie: better rate, more minutes)
-  const ms = humans.filter(a => a.tasks >= RULES.BOARD_MIN_TASKS_AGENT)
-    .sort((a, b) => b.tasks - a.tasks || b.done / b.tasks - a.done / a.tasks || b.minutes - a.minutes)[0];
-  if (ms) agentAward('most_shared', ms, ms.tasks, { tasks: ms.tasks, rate: rate(ms.done, ms.tasks), minutes: ms.minutes });
+  // most_shared and trendsetter use credited shares (one per task per day, capped), not raw volume.
+  const shares = await weekShares(env, week, trending);
+  const award = (sh: AgentShares) => {
+    const wk = agentsAll.get(sh.id);
+    return { id: sh.id, name: sh.name, seed: false, model: wk?.model ?? '', app: wk?.app || sh.app, minutes: wk?.minutes ?? 0 };
+  };
 
-  // trendsetter: most traces on trending tasks; detail names its most frequent trending task (public, not sensitive)
-  const ts = humans.filter(a => a.trending > 0).sort((a, b) => b.trending - a.trending || b.tasks - a.tasks)[0];
+  // most_shared: most shares (tie: better rate, more raw traces)
+  const ms = [...shares.values()].filter(a => a.shares >= RULES.BOARD_MIN_TASKS_AGENT)
+    .sort((a, b) => b.shares - a.shares || b.done / b.traces - a.done / a.traces || b.traces - a.traces)[0];
+  if (ms) agentAward('most_shared', award(ms), ms.shares, { tasks: ms.shares, traces: ms.traces, rate: rate(ms.done, ms.traces), minutes: award(ms).minutes });
+
+  // trendsetter: most shares on trending tasks; detail names its most frequent trending task (public, not sensitive)
+  const ts = [...shares.values()].filter(a => a.trend_shares > 0).sort((a, b) => b.trend_shares - a.trend_shares || b.shares - a.shares)[0];
   if (ts) {
-    const counts = new Map<string, number>();
-    for (const r of rowsAll) if (r.agent_id === ts.id && trending.has(r.task_id) && publicTasks.has(r.task_id)) counts.set(r.task_id, (counts.get(r.task_id) ?? 0) + 1);
-    const topTask = [...counts].sort((a, b) => b[1] - a[1])[0]?.[0];
-    agentAward('trendsetter', ts, ts.trending, {
-      trending: ts.trending, tasks: ts.tasks, rate: rate(ts.done, ts.tasks), task_label: topTask ? publicTasks.get(topTask) : undefined,
+    agentAward('trendsetter', award(ts), ts.trend_shares, {
+      trending: ts.trend_shares, tasks: ts.shares, rate: rate(ts.done, ts.traces),
+      task_label: ts.top_trending ? publicTasks.get(ts.top_trending) : undefined,
     });
   }
 

@@ -33,7 +33,7 @@ async function computeModelBoard(env: Bindings, now: number): Promise<ModelBoard
     const top = await topTask(env, week);
     if (!top || top.n < RULES.BOARD_MIN_TASKS_GROUP) continue;
     const { results } = await env.DB.prepare(
-      `SELECT t.model, COUNT(*) AS n, COALESCE(SUM(t.outcome = 'done'), 0) AS done, COUNT(DISTINCT t.agent_id) AS ag
+      `SELECT t.model, COUNT(*) AS n, COALESCE(SUM(t.outcome = 'done'), 0) AS done, COUNT(DISTINCT t.owner_key) AS ag
        FROM traces t JOIN agents a ON a.id = t.agent_id
        WHERE t.week = ? AND t.task_id = ? AND ${ELIGIBLE} AND LOWER(t.model) != 'unknown'
        GROUP BY t.model HAVING ag >= ? AND n >= ? ORDER BY (done * 1.0 / n) DESC, n DESC LIMIT 4`,
@@ -62,7 +62,7 @@ const enoughDays = (days: Spark['days']) => days.filter(d => d.traces != null).l
 async function taskDays(env: Bindings, taskId: string, now: number): Promise<Spark['days']> {
   const yesterday = now - DAY;
   const { results } = await env.DB.prepare(
-    `SELECT t.day, COUNT(*) AS traces, COUNT(DISTINCT t.agent_id) AS agents FROM traces t JOIN agents a ON a.id = t.agent_id
+    `SELECT t.day, COUNT(*) AS traces, COUNT(DISTINCT t.owner_key) AS agents FROM traces t JOIN agents a ON a.id = t.agent_id
      WHERE t.day >= ? AND t.day <= ? AND ${ELIGIBLE} AND t.task_id = ? GROUP BY t.day`,
   ).bind(dayOf(yesterday - 13 * DAY), dayOf(yesterday), taskId).all<{ day: string; traces: number; agents: number }>();
   const byDay = new Map(results.map(r => [r.day, r]));

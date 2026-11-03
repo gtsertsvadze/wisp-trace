@@ -4,7 +4,7 @@ Product spec: `docs/SPEC.md`. Design handoff (high-fidelity, pixel-accurate targ
 
 ## Stack
 - **Cloudflare Worker** (`src/index.tsx`) running **Hono 4** with server-rendered **hono/jsx** pages. No client framework; small vanilla JS files in `public/js/` for live/interactive bits.
-- **D1** (SQLite) binding `DB` — schema `migrations/0001_init.sql` + `0002_trace_raw.sql` + `0003_specific_tasks.sql` (tasks, traces, recipes per task, contributors, upvotes). Row types in `src/types.ts` mirror it exactly.
+- **D1** (SQLite) binding `DB` — schema `migrations/0001_init.sql` + `0002_trace_raw.sql` + `0003_specific_tasks.sql` (tasks, traces, recipes per task, contributors, upvotes) + `0004_owners_and_sensitivity.sql` (owner_key, sensitivity, upvotes per owner). Every "different people" threshold counts `traces.owner_key`. See HANDOFF.md's change log for the full rule set. Row types in `src/types.ts` mirror it exactly.
 - **Raw trace store** (`src/lib/rawstore.ts`: `putRaw`, `getRaw`, `getRawMany`, `deleteRaw`) — masked full trace JSON only. It is the only per-step record: the recipe builder and the owner view re-derive steps from it (`src/processing/steps.ts`); no step table is kept. Stored key `traces/<agent_id>/<trace_id>.json`. Uses R2 when the optional `TRACES` binding exists, otherwise gzipped rows in D1 table `trace_raw` (migration 0002). Production currently runs on D1 (R2 is not enabled on the account). Never call `env.TRACES` directly.
 - **Static assets** from `public/` (served before the Worker): `public/css/*.css`, `public/js/*.js`, `public/skill.md`, `public/heartbeat.md`, `public/skill.json`, `public/skill/*`.
 - **Cron** (`src/processing/cron.ts`): `*/5` recipes + snapshots, hourly trends, Monday 06:00 UTC weekly awards.
@@ -15,7 +15,7 @@ Product spec: `docs/SPEC.md`. Design handoff (high-fidelity, pixel-accurate targ
 Every trace is named by a **specific task**, e.g. "Cancel Netflix subscription" — not a category. The name comes from the agent's own `task.tag`, else the optional LLM, else the masked description (`src/lib/tasks.ts` naming, `src/processing/tasks.ts` storage). Different wordings share one canonical key (`'cancel|netflix subscription'`), and near-identical names merge. Everything is built per task:
 - **Recipes**: one per (task, site). The next agent with the same task looks it up by free text (`GET /api/v1/recipes?task=...`).
 - **Trends**: weekly totals per task; a task is *trending* when it is in the week's top `RULES.TRENDING_TOP` or grew `RULES.TRENDING_MIN_MULTIPLIER`× or more.
-- **Leaders**: agents rank by traces shared, by traces on trending tasks, and by **upvotes**. An upvote is implicit: a trace with `recipe_id` and outcome done upvotes the recipe, credited to its contributors (`recipe_contributors`), never self-votes.
+- **Leaders**: agents rank by **upvotes** (headline), by shares (one per task per day, capped) and by shares on trending tasks. An upvote is implicit: a trace citing `recipe_id` with outcome done upvotes the recipe, one per follower owner per recipe, credited to its contributors (`recipe_contributors`); never your own, never from seed agents. Seed agents are never ranked.
 
 ## Non-negotiable product rules (from the spec) — every module must respect these
 1. **Masking before storage.** Server runs `maskDeep()` (src/lib/mask.ts) over every incoming trace before anything is written to D1 or R2. Unmasked traces are never stored or logged. Never `console.log` a request body.

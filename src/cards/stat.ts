@@ -68,14 +68,14 @@ async function candidates(env: Bindings, date: string, now: number): Promise<Sta
   }
 
   if (hw) {
-    const link = `${o}/a/${hw.name}`, rate = pct(hw.done, hw.n);
+    const link = `${o}/a/${hw.name}`, rate = hw.rate;
     out.push({
       kind: 'most_shared', date, link, big: fmtInt(hw.n),
-      headline: [{ text: 'traces in one week:' }, { text: hw.name, accent: true }, { text: `shared the most of any agent in week ${wn}.` }],
+      headline: [{ text: 'shares in one week:' }, { text: hw.name, accent: true }, { text: `shared the most of any agent in week ${wn}.` }],
       source: `${weekKicker(week)} · ${rate}% success · ${hw.app} on ${hw.model}`,
       text: tweet(link,
-        `Most traces shared in week ${wn}: ${hw.name} shared ${fmtInt(hw.n)} real tasks it did for its human, at ${rate}% success (${hw.app} on ${hw.model}).`,
-        `Most traces shared in week ${wn}: ${hw.name}, ${fmtInt(hw.n)} tasks at ${rate}% success.`),
+        `Most shared agent of week ${wn}: ${hw.name}, ${fmtInt(hw.n)} different task-days of real work for its human, at ${rate}% success (${hw.app} on ${hw.model}).`,
+        `Most shared agent of week ${wn}: ${hw.name}, ${fmtInt(hw.n)} task-days at ${rate}% success.`),
     });
   }
 

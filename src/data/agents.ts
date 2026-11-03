@@ -5,7 +5,7 @@ import type { Bindings } from '../env';
 import type { AwardId, Outcome } from '../types';
 import { opaqueKey } from '../lib/ids';
 import { RULES } from '../lib/rules';
-import { TASK_COLS, profileDone, taskOf, type TaskCols } from '../processing/tasks';
+import { TASK_COLS, publicDone, taskOf, type TaskCols } from '../processing/tasks';
 import { DAY, MIN, WEEK, dayOf, dayStart, isoWeek, weekStart } from '../lib/time';
 import { type AwardDetail, awardsFor } from './boards';
 
@@ -65,7 +65,7 @@ export interface AgentProfile {
 }
 
 const AWARD_TITLE: Record<AwardId, string> = {
-  most_shared: 'Most traces shared',
+  most_shared: 'Most shared',
   trendsetter: 'Trend-setter of the week',
   most_upvoted: 'Most upvoted',
   most_reliable_model: 'Most reliable model',
@@ -74,7 +74,7 @@ const AWARD_TITLE: Record<AwardId, string> = {
 };
 
 interface AgentLite {
-  id: string; name: string; app: string; model: string; claim_status: string; owner_handle: string | null;
+  id: string; name: string; app: string; model: string; claim_status: string; owner_handle: string | null; owner_platform: string | null;
   is_seed: number; created_at: number; last_seen_at: number | null; last_checkin_at: number | null; deleted_at: number | null;
 }
 
@@ -116,7 +116,7 @@ interface TraceTaskRow { id: string; outcome: Outcome; ticks: string; steps_coun
 async function findAgent(env: Bindings, name: string): Promise<AgentLite | null> {
   if (!/^[a-z0-9][a-z0-9-]{2,31}$/.test(name)) return null;
   const a = await env.DB.prepare(
-    'SELECT id, name, app, model, claim_status, owner_handle, is_seed, created_at, last_seen_at, last_checkin_at, deleted_at FROM agents WHERE name = ?',
+    'SELECT id, name, app, model, claim_status, owner_handle, owner_platform, is_seed, created_at, last_seen_at, last_checkin_at, deleted_at FROM agents WHERE name = ?',
   ).bind(name).first<AgentLite>();
   if (!a || a.deleted_at) return null;
   if (!a.is_seed && a.claim_status !== 'claimed') return null; // profiles exist publicly only after consent
@@ -147,8 +147,10 @@ export async function agentProfile(env: Bindings, name: string, now = Date.now()
       "SELECT week, award, value FROM awards WHERE subject_type = 'agent' AND (agent_id = ? OR (agent_id IS NULL AND subject = ?)) ORDER BY week DESC",
     ).bind(a.id, a.name),
     env.DB.prepare(
-      `SELECT COUNT(*) AS n FROM upvotes u JOIN recipe_contributors c ON c.recipe_id = u.recipe_id AND c.agent_id = ? WHERE u.voter_id != ?`,
-    ).bind(a.id, a.id),
+      // Votes from other people only (never seed agents, never its own owner): same rule as the leaderboard.
+      `SELECT COUNT(*) AS n FROM upvotes u JOIN recipe_contributors c ON c.recipe_id = u.recipe_id AND c.agent_id = ?
+       WHERE u.voter_owner LIKE 'o:%' AND u.voter_owner != ?`,
+    ).bind(a.id, a.owner_handle && !a.is_seed ? `o:${a.owner_platform ?? ''}:${a.owner_handle.toLowerCase()}` : ''),
     env.DB.prepare(
       `SELECT COUNT(*) AS n FROM recipe_contributors c JOIN recipes r ON r.id = c.recipe_id JOIN tasks k ON k.id = r.task_id
        WHERE c.agent_id = ? AND r.status IN ('trusted', 'forming') AND k.crowd >= ?`,
@@ -166,7 +168,7 @@ export async function agentProfile(env: Bindings, name: string, now = Date.now()
   const recentTasks: RecentTask[] = await Promise.all(recentRows.map(async r => {
     return {
       key: await opaqueKey(r.id, env.HASH_SALT ?? ''),
-      task: profileDone(taskOf(r), r.outcome), outcome: r.outcome, ticks: r.ticks ?? '',
+      task: publicDone(taskOf(r), r.outcome, r.trace_sensitive), outcome: r.outcome, ticks: r.ticks ?? '',
       steps: r.steps_count, mins: Math.max(1, Math.ceil((r.duration_s ?? 0) / 60)), day: r.day,
     };
   }));
@@ -212,7 +214,7 @@ export async function agentFeedItems(env: Bindings, name: string, now = Date.now
   const items = await Promise.all(results.map(async r => {
     return {
       key: await opaqueKey(r.id, env.HASH_SALT ?? ''),
-      task: profileDone(taskOf(r), r.outcome), outcome: r.outcome, ticks: r.ticks ?? '',
+      task: publicDone(taskOf(r), r.outcome, r.trace_sensitive), outcome: r.outcome, ticks: r.ticks ?? '',
       steps: r.steps_count, mins: Math.max(1, Math.ceil((r.duration_s ?? 0) / 60)), day: r.day,
     };
   }));

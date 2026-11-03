@@ -45,7 +45,8 @@ interface FeedRow extends TaskCols {
 export interface FeedPage { items: PublicFeedItem[]; cursor: string | null }
 
 /** The line under a feed row's task name. */
-export function taskNote(task: { crowd: number }): string {
+export function taskNote(task: { crowd: number; sensitive: number }, traceSensitive = 0): string {
+  if (task.sensitive || traceSensitive) return 'sensitive task: never shown by name';
   return isPublicTask(task)
     ? `${task.crowd} people's agents did this`
     : `name stays private until ${RULES.TASK_PUBLIC_MIN_CROWD} people's agents do it`;
@@ -55,9 +56,9 @@ function toItem(r: FeedRow, key: string): PublicFeedItem {
   const task = taskOf(r);
   return {
     key,
-    task: publicDone(task, r.outcome),
-    note: taskNote(task),
-    public: isPublicTask(task),
+    task: publicDone(task, r.outcome, r.trace_sensitive),
+    note: taskNote(task, r.trace_sensitive),
+    public: isPublicTask(task) && !task.sensitive && !r.trace_sensitive,
     outcome: r.outcome,
     ticks: r.ticks ?? '',
     steps: r.steps_count,

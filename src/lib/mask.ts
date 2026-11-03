@@ -76,6 +76,8 @@ const STRONG_KEYS = String.raw`password|passwd|pwd|passcode|passphrase|secret|ap
 const WEAK_KEYS = String.raw`token|session(?:[_\-]?id)?|sessid|sid|sig|signature|auth|otp|code_verifier|credentials?|cookie`;
 const KEY_PREFIX = String.raw`(?<![A-Za-z0-9_\-])((?:[A-Za-z0-9]+[_\-])*`;
 const NOT_A_VALUE = String.raw`(?:required|incorrect|invalid|wrong|correct|hidden|reset|changed|updated|accepted|rejected|missing|empty|field|not|too|strong|weak|saved|set|ok|manager|protected|masked|redacted|none|null|n/a)(?![A-Za-z0-9])`;
+// Words that commonly follow "password"/"pin" in prose and are never the value itself ("password must", "pin code").
+const PROSE_STOP = String.raw`(?:again|also|back|been|before|below|above|board|button|cannot|change|check|code|confirm(?:ation|ed)?|dialog|does|done|email|entered|entry|error|expired|expiry|fields|first|form|from|hash|here|hint|info|input|into|item|items|last|later|length|link|login|match(?:es)?|message|mismatch|modal|must|need(?:s|ed)?|never|number|once|only|option|page|policy|popup|post|posts|prompt|recovery|requirements?|rules|same|screen|section|sent|settings?|should|shown|step|strength|successfully|tabs?|text|that|their|them|then|there|these|this|those|twice|typed|unchanged|username|value|visible|were|what|when|where|which|will|with|works?|would|your)(?![A-Za-z0-9])`;
 
 const MON = '(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)';
 const DATE = String.raw`[0-9]{4}[\-/.][0-9]{1,2}[\-/.][0-9]{1,2}|[0-9]{1,2}[\-/.][0-9]{1,2}[\-/.][0-9]{2,4}|[0-9]{1,2}(?:st|nd|rd|th)?[ \t]+(?:of[ \t]+)?${MON}[a-z]*\.?,?[ \t]+[0-9]{4}|${MON}[a-z]*\.?[ \t]+[0-9]{1,2}(?:st|nd|rd|th)?,?[ \t]+[0-9]{4}|(?:19|20)[0-9]{2}`;
@@ -106,6 +108,8 @@ export const MASK_PATTERNS: MaskRuleDef[] = [
   ['kv_quoted', '[SECRET]', String.raw`${KEY_PREFIX}(?:${STRONG_KEYS}|${WEAK_KEYS}))\\?["']?[ \t]*[:=][ \t]*\\?(["'])${NOT_LABEL}([^"'\\\r\n]+)\\?\2`, 'i', 3, '', ''],
   ['kv_equals', '[SECRET]', String.raw`${KEY_PREFIX}(?:${STRONG_KEYS}|${WEAK_KEYS}))=${NOT_LABEL}([^ \t\r\n&"'<>;,\\]+)`, 'i', 2, '=', ''],
   ['kv_colon', '[SECRET]', String.raw`${KEY_PREFIX}(?:${STRONG_KEYS}))(?:[ \t]*:[ \t]*|[ \t]+(?:is|was)[ \t]+)(?!\[[A-Z]+\]|${NOT_A_VALUE})([^ \t\r\n"'<>,;\\]+)`, 'i', 2, '', ''],
+  // "<key> <value>" in prose: "entered password hunter22". Single space, value of 4+ chars that is not a stop word.
+  ['kv_prose', '[SECRET]', String.raw`(?<![A-Za-z0-9_\-])((?:password|passcode|passphrase|pin)[ \t])(?!\[[A-Z]+\]|${NOT_A_VALUE}|${PROSE_STOP})([^ \t\r\n"'<>,;\\]{4,})`, 'i', 2, '', ''],
   ['cvv', '[SECRET]', String.raw`(?<![A-Za-z])(cvv2?|cvc2?|csc|security[ \t]+code|card[ \t]+verification(?:[ \t]+(?:code|value|number))?)(?![A-Za-z])([^0-9\r\n]{0,16}?)([0-9]{3,4})(?![0-9]|[ \-][0-9])`, 'i', 3, 'D', ''],
   ['otp', '[SECRET]', String.raw`(?<![A-Za-z])((?:one[ \t\-]?time[ \t]+(?:pass(?:word|code)?|code|pin)|otp|totp|2fa|mfa)(?:[ \t]+code)?|(?:verification|security|authenticat(?:ion|or)|sms|login|sign[ \t\-]?in|access|two[ \t\-]factor)[ \t]+code|pin(?:[ \t]+(?:code|number))?)(?![A-Za-z])([^0-9\r\n]{0,24}?)([0-9]{4,8}|[0-9]{3}[ \-][0-9]{3})(?![0-9]|[ \-][0-9])`, 'i', 3, 'D', ''],
 
@@ -281,31 +285,43 @@ export function maskText(s: string, opts?: MaskOptions): { text: string; counts:
 }
 
 // ---- object keys -----------------------------------------------------------------------------------
-const SECRET_WORDS = new Set([
-  'password', 'passwords', 'passwd', 'pwd', 'passcode', 'passphrase', 'secret', 'secrets', 'token', 'auth',
-  'authorization', 'cookie', 'cookies', 'session', 'sessionid', 'sid', 'credential', 'credentials', 'otp', 'totp',
-  'cvv', 'cvv2', 'cvc', 'cvc2', 'pin', 'apikey', 'csrf', 'xsrf', 'jwt', 'bearer', 'sig', 'signature', 'privatekey',
-  'accesskey', 'secretkey',
-]);
-const SECRET_SUFFIXES = ['token', 'secret', 'password', 'passwd', 'apikey', 'cookie', 'credential', 'credentials', 'sessionid', 'privatekey'];
-const SECRET_PAIR = /(^|_)(api|private|access|secret|signing|encryption)_key(_|$)/;
-const EXEMPT_WORDS = new Set(['count', 'total', 'limit', 'max', 'min', 'remaining', 'usage', 'used', 'type', 'kind', 'expires', 'expiry', 'ttl', 'length', 'len', 'required', 'present', 'valid', 'field', 'label', 'placeholder']);
-const BOOL_PREFIX = new Set(['is', 'has', 'use', 'enable', 'enabled', 'allow', 'show']);
-const KEY_LABELS: [RegExp, string][] = [
-  [/(^|_)(ip|ipv4|ipv6|remote_addr|client_ip)(_|$)/, LABELS.IP],
-  [/(^|_)(email|emails|e_mail|email_address|mail_address)(_|$)/, LABELS.EMAIL],
-  [/(^|_)(card_?(number|num|no)|cc_?(number|num)|pan|credit_?card(_?number)?)(_|$)/, LABELS.CARD],
-  [/(^|_)iban(_|$)/, LABELS.IBAN],
-  [/(^|_)(account_?(number|num|no)|acct_?(number|num|no)|routing(_?number|_?no)?|sort_?code|bsb|bank_account)(_|$)/, LABELS.ACCOUNT],
-  [/(^|_)(ssn|social_security(_number)?|national_insurance(_number)?|ni_number|nino|tax_id|taxpayer_id)(_|$)/, LABELS.SSN],
-  [/(^|_)(dob|date_of_birth|birth_?date|birthday)(_|$)/, LABELS.DOB],
-  [/(^|_)(post_?code|postal_?code|zip|zip_?code)(_|$)/, LABELS.POSTCODE],
-  [/(^|_)(phone|phones|telephone|tel|mobile|cell|cellphone|fax|msisdn|whatsapp|phone_number)(_|$)/, LABELS.PHONE],
-  [/(^|_)(address|addresses|addr|street|street_address|address_line_?[0-9]?|house_number)(_|$)/, LABELS.ADDRESS],
-  [/(^|_)((full|first|last|given|family|middle|maiden|legal|customer|contact|guest|passenger|recipient|cardholder|holder|billing|shipping|traveller|traveler|sur)_?name|surname|name_on_card)(_|$)/, LABELS.NAME],
-];
-const NOT_ADDRESS = new Set(['ip', 'email', 'mac', 'web', 'url', 'wallet', 'contract', 'memory', 'hex']);
-const URL_WORDS = new Set(['url', 'urls', 'href', 'uri', 'link', 'src', 'referrer', 'referer']);
+/** Key-based labelling tables, as plain data so the ports can embed the identical tables. */
+export const MASK_KEY_TABLES = {
+  SECRET_WORDS: [
+    'password', 'passwords', 'passwd', 'pwd', 'passcode', 'passphrase', 'secret', 'secrets', 'token', 'auth',
+    'authorization', 'cookie', 'cookies', 'session', 'sessionid', 'sid', 'credential', 'credentials', 'otp', 'totp',
+    'cvv', 'cvv2', 'cvc', 'cvc2', 'pin', 'apikey', 'csrf', 'xsrf', 'jwt', 'bearer', 'sig', 'signature', 'privatekey',
+    'accesskey', 'secretkey',
+  ],
+  SECRET_SUFFIXES: ['token', 'secret', 'password', 'passwd', 'apikey', 'cookie', 'credential', 'credentials', 'sessionid', 'privatekey'],
+  SECRET_PAIR: String.raw`(^|_)(api|private|access|secret|signing|encryption)_key(_|$)`,
+  EXEMPT_WORDS: ['count', 'total', 'limit', 'max', 'min', 'remaining', 'usage', 'used', 'type', 'kind', 'expires', 'expiry', 'ttl', 'length', 'len', 'required', 'present', 'valid', 'field', 'label', 'placeholder'],
+  BOOL_PREFIX: ['is', 'has', 'use', 'enable', 'enabled', 'allow', 'show'],
+  /** [regex source tested against the snake_cased key, label] in priority order. */
+  KEY_LABELS: [
+    [String.raw`(^|_)(ip|ipv4|ipv6|remote_addr|client_ip)(_|$)`, LABELS.IP],
+    [String.raw`(^|_)(email|emails|e_mail|email_address|mail_address)(_|$)`, LABELS.EMAIL],
+    [String.raw`(^|_)(card_?(number|num|no)|cc_?(number|num)|pan|credit_?card(_?number)?)(_|$)`, LABELS.CARD],
+    [String.raw`(^|_)iban(_|$)`, LABELS.IBAN],
+    [String.raw`(^|_)(account_?(number|num|no)|acct_?(number|num|no)|routing(_?number|_?no)?|sort_?code|bsb|bank_account)(_|$)`, LABELS.ACCOUNT],
+    [String.raw`(^|_)(ssn|social_security(_number)?|national_insurance(_number)?|ni_number|nino|tax_id|taxpayer_id)(_|$)`, LABELS.SSN],
+    [String.raw`(^|_)(dob|date_of_birth|birth_?date|birthday)(_|$)`, LABELS.DOB],
+    [String.raw`(^|_)(post_?code|postal_?code|zip|zip_?code)(_|$)`, LABELS.POSTCODE],
+    [String.raw`(^|_)(phone|phones|telephone|tel|mobile|cell|cellphone|fax|msisdn|whatsapp|phone_number)(_|$)`, LABELS.PHONE],
+    [String.raw`(^|_)(address|addresses|addr|street|street_address|address_line_?[0-9]?|house_number)(_|$)`, LABELS.ADDRESS],
+    [String.raw`(^|_)((full|first|last|given|family|middle|maiden|legal|customer|contact|guest|passenger|recipient|cardholder|holder|billing|shipping|traveller|traveler|sur)_?name|surname|name_on_card)(_|$)`, LABELS.NAME],
+  ] as [string, string][],
+  NOT_ADDRESS: ['ip', 'email', 'mac', 'web', 'url', 'wallet', 'contract', 'memory', 'hex'],
+  URL_WORDS: ['url', 'urls', 'href', 'uri', 'link', 'src', 'referrer', 'referer'],
+};
+const SECRET_WORDS = new Set(MASK_KEY_TABLES.SECRET_WORDS);
+const SECRET_SUFFIXES = MASK_KEY_TABLES.SECRET_SUFFIXES;
+const SECRET_PAIR = new RegExp(MASK_KEY_TABLES.SECRET_PAIR);
+const EXEMPT_WORDS = new Set(MASK_KEY_TABLES.EXEMPT_WORDS);
+const BOOL_PREFIX = new Set(MASK_KEY_TABLES.BOOL_PREFIX);
+const KEY_LABELS: [RegExp, string][] = MASK_KEY_TABLES.KEY_LABELS.map(([src, l]) => [new RegExp(src), l]);
+const NOT_ADDRESS = new Set(MASK_KEY_TABLES.NOT_ADDRESS);
+const URL_WORDS = new Set(MASK_KEY_TABLES.URL_WORDS);
 const keyCache = new Map<string, string | null>();
 
 /** Label implied by an object key ('[SECRET]', '[EMAIL]', ...), 'URL' for url-ish keys, or null. */

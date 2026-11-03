@@ -1,0 +1,57 @@
+/* Methodology page (/methodology): calm long-form, same visual language as Trends. Classes prefixed meth-. */
+
+.meth-grid { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 48px clamp(32px, 5vw, 80px); align-items: start; }
+.meth-toc { position: sticky; top: 24px; display: grid; gap: 2px; }
+.meth-toc a {
+  display: flex; gap: 10px; align-items: baseline; padding: 7px 0; font-size: 14px; color: var(--dim);
+  border-top: 1px solid var(--line);
+}
+.meth-toc a:first-child { border-top: 0; }
+.meth-toc a:hover { color: var(--mint); }
+.meth-toc .n { font-family: var(--font-mono); font-size: 11px; color: var(--mute); width: 20px; flex: none; }
+
+.meth-body { max-width: 68ch; display: grid; gap: 56px; }
+.meth-section { scroll-margin-top: 24px; display: grid; gap: 14px; }
+.meth-section h2 { font-weight: 700; font-size: 28px; line-height: 1.1; letter-spacing: -0.025em; font-variation-settings: 'opsz' 96; }
+.meth-section .kicker { margin-bottom: -2px; }
+.meth-section p { color: var(--dim); }
+.meth-section p strong { color: var(--text); font-weight: 600; }
+.meth-section ul { display: grid; gap: 8px; color: var(--dim); padding-left: 0; }
+.meth-section li { position: relative; padding-left: 20px; }
+.meth-section li::before { content: '■'; position: absolute; left: 0; top: 0; color: var(--mint); font-size: 10px; line-height: 2.6; }
+.meth-section li strong { color: var(--text); font-weight: 600; }
+.meth-section a:not(.btn) { color: var(--text); text-decoration: underline; text-decoration-color: rgba(236, 238, 246, .25); text-underline-offset: 3px; }
+.meth-section a:not(.btn):hover { color: var(--mint); text-decoration-color: var(--mint); }
+
+/* live rule numbers quoted inline */
+.meth-n {
+  display: inline-block; font-family: var(--font-mono); font-size: .85em; font-weight: 600; color: var(--mint);
+  background: var(--mint-08); border: 1px solid var(--mint-30); border-radius: 6px; padding: 0 6px; line-height: 1.5; vertical-align: baseline;
+}
+
+/* definition rows (awards, statuses) */
+.meth-rows { display: grid; }
+.meth-row { display: grid; grid-template-columns: minmax(120px, 170px) minmax(0, 1fr); gap: 16px; padding: 10px 0; border-top: 1px solid var(--line); font-size: 15px; }
+.meth-row:last-child { border-bottom: 1px solid var(--line); }
+.meth-row dt { font-family: var(--font-mono); font-size: 13px; color: var(--text); padding-top: 2px; }
+.meth-row dd { color: var(--dim); }
+
+/* fixed agent text, quoted verbatim */
+.meth-quote { background: var(--panel-deep); border: 1px solid var(--line); border-radius: 14px; padding: 16px 18px; display: grid; gap: 10px; }
+.meth-quote .th { margin-bottom: 2px; }
+.meth-quote blockquote { font-size: 15px; color: var(--text); padding-left: 14px; border-left: 2px solid var(--mint); }
+.meth-quote blockquote.is-mute { border-left-color: var(--mute); color: var(--dim); }
+
+.meth-note { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 16px 18px; font-size: 15px; color: var(--dim); }
+.meth-note strong { color: var(--text); }
+
+.meth-foot { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; padding-top: 8px; }
+
+@media (max-width: 900px) {
+  .meth-grid { grid-template-columns: minmax(0, 1fr); gap: 32px; }
+  .meth-toc { position: static; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 0 24px; }
+  .meth-toc a:first-child { border-top: 1px solid var(--line); }
+  .meth-body { gap: 44px; }
+  .meth-section h2 { font-size: 24px; }
+  .meth-row { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+}

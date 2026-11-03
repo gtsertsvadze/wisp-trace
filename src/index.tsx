@@ -29,8 +29,9 @@ const app = new Hono<AppEnv>();
 // www -> apex
 app.use('*', async (c, next) => {
   const url = new URL(c.req.url);
-  if (url.hostname === 'www.wisptrace.com') {
+  if (url.hostname === 'www.wisptrace.com' || (url.hostname === 'wisptrace.com' && url.protocol === 'http:')) {
     url.hostname = 'wisptrace.com';
+    url.protocol = 'https:';
     return c.redirect(url.toString(), 301);
   }
   await next();

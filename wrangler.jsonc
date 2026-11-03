@@ -6,9 +6,11 @@
   "compatibility_flags": ["nodejs_compat"],
   "account_id": "673fce2270750727c4e19b5803ece956",
   "workers_dev": true,
+  // Zone routes: the apex and www DNS records are proxied (orange cloud), so the Worker answers every request
+  // before it reaches the old origin. No DNS changes needed. www redirects to the apex in src/index.tsx.
   "routes": [
-    { "pattern": "wisptrace.com", "custom_domain": true },
-    { "pattern": "www.wisptrace.com", "custom_domain": true }
+    { "pattern": "wisptrace.com/*", "zone_name": "wisptrace.com" },
+    { "pattern": "www.wisptrace.com/*", "zone_name": "wisptrace.com" }
   ],
   // Static files (css, js, skill.md, heartbeat.md, skill scripts). Anything not found falls through to the Worker.
   "assets": {

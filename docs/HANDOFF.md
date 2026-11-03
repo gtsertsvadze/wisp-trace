@@ -5,7 +5,7 @@ For a coding agent picking this up cold. Read [SPEC.md](SPEC.md) and [ARCHITECTU
 ## Live
 
 - Worker deployed: https://wisptrace.george-tsertsvadze97.workers.dev (D1 `wisptrace`, migrations 0001 and 0002 applied, crons registered).
-- **wisptrace.com is not attached yet.** The zone has pre-existing DNS records (likely registrar parking). In the Cloudflare dashboard → wisptrace.com → DNS, delete the existing A/AAAA/CNAME records for `wisptrace.com` and `www`, then run `npx wrangler deploy` again; the custom-domain routes are already in `wrangler.jsonc`.
+- **wisptrace.com is live** via Workers zone routes (`wisptrace.com/*`, `www.wisptrace.com/*`); the apex/www DNS records are proxied, so no DNS changes were needed. www and http redirect to https://wisptrace.com.
 - Production secrets `ADMIN_TOKEN` and `HASH_SALT` are set. Their values are in `.secrets.local` (gitignored, on the original machine only).
 - Production DB is empty by design (rule: never fake anything). Pages show honest empty states.
 
@@ -27,7 +27,7 @@ For a coding agent picking this up cold. Read [SPEC.md](SPEC.md) and [ARCHITECTU
 
 ## Backend TODO (in priority order)
 
-1. **Attach wisptrace.com** (see above). A human must delete the DNS records.
+1. **Done:** wisptrace.com is attached (zone routes).
 2. **Seed agents.** "Don't open empty": create seed agents in production and point real agents (OpenClaw, Hermes…) running the skill at them doing real tasks. Must be live by ~12 Nov so trends have two weeks of data before Black Friday (27 Nov).
    ```bash
    curl -X POST https://<host>/api/admin/seed-agents -H "Authorization: Bearer $ADMIN_TOKEN" \

@@ -5,7 +5,7 @@ Product spec: `docs/SPEC.md`. Design handoff (high-fidelity, pixel-accurate targ
 ## Stack
 - **Cloudflare Worker** (`src/index.tsx`) running **Hono 4** with server-rendered **hono/jsx** pages. No client framework; small vanilla JS files in `public/js/` for live/interactive bits.
 - **D1** (SQLite) binding `DB` — schema `migrations/0001_init.sql`. Row types in `src/types.ts` mirror it exactly.
-- **R2** binding `TRACES` — masked full trace JSON only, key `traces/<agent_id>/<trace_id>.json`.
+- **Raw trace store** (`src/lib/rawstore.ts`: `putRaw`, `getRaw`, `deleteRaw`) — masked full trace JSON only, key `traces/<agent_id>/<trace_id>.json`. Uses R2 when the optional `TRACES` binding exists, otherwise gzipped rows in D1 table `trace_raw` (migration 0002). Production currently runs on D1 (R2 is not enabled on the account). Never call `env.TRACES` directly.
 - **Static assets** from `public/` (served before the Worker): `public/css/*.css`, `public/js/*.js`, `public/skill.md`, `public/heartbeat.md`, `public/skill.json`, `public/skill/*`.
 - **Cron** (`src/processing/cron.ts`): `*/5` recipes + snapshots, hourly trends, Monday 06:00 UTC weekly awards.
 - **Optional LLM** (`src/lib/llm.ts`, Anthropic Messages API via fetch, `ANTHROPIC_API_KEY`). Every LLM use has a deterministic heuristic fallback; the site must work fully without a key.
@@ -31,20 +31,22 @@ Product spec: `docs/SPEC.md`. Design handoff (high-fidelity, pixel-accurate targ
 | `src/lib/ids.ts` | `newId('ag'|'tr'|'rc')`, `newApiKey()` (`wt_…`), `newOwnerToken()` (`wto_…`), `newClaimCode(name)`, `sha256Hex`, `opaqueKey` |
 | `src/lib/rules.ts` | `RULES` thresholds |
 | `src/lib/agent-text.ts` | `AGENT_TEXT` (all text sent to agents), `claimPostText()`, `REPO_URL` |
-| `src/lib/mask.ts` | `maskText`, `maskDeep`, `maskUrl` (stub until BE-1 lands; signatures fixed) |
-| `src/lib/llm.ts` | `llmJson<T>(env, {model:'fast'|'smart', system, user, schema})` → `T | null` (stub until BE-3 lands) |
-| `src/processing/cron.ts` | `runJobs(env, jobs?, {now?, week?})`, `scheduled` (stub until BE-3 lands) |
-| `src/processing/snapshots.ts` | `cached(env, key, maxAgeMs, compute)`, `putSnapshot`, `dropSnapshots` (done) |
-| `src/processing/trends.ts` | `weeklyTrends(env, {week?, now?})` → `WeeklyTrends` (src/types.ts), `rebuildDailyStats` (stub until BE-3 lands) |
-| `src/processing/policies.ts` | `getSitePolicy`, `setSitePolicy`, `reportBlocked` (stub until BE-3 lands) |
-| `src/processing/classify.ts` | `classifyTask(env, {description, sites?, type_hint?, steps?})` → `{task_type, classifier}` (stub until BE-2 lands) |
-| `src/processing/ingest.ts` | `ingestTrace(env, agent, body, {occurredAt?, ctx?})`, `IngestError`, `IngestResult` (stub until BE-2 lands) |
-| `src/lib/normalize.ts` | `registrableDomain`, `normalizeModel`, `normalizeApp` (stub until BE-2 lands) |
-| `src/lib/auth.ts` | `requireAgent`, `optionalAgent`, `requireAdmin`, `agentByOwnerToken`, `clientIpHash` (stub until BE-2 lands) |
+| `src/lib/mask.ts` | `maskText`, `maskDeep`, `maskUrl` |
+| `src/lib/llm.ts` | `llmJson<T>(env, {model:'fast'|'smart', system, user, schema})` → `T | null` |
+| `src/processing/cron.ts` | `runJobs(env, jobs?, {now?, week?})`, `scheduled` |
+| `src/processing/snapshots.ts` | `cached(env, key, maxAgeMs, compute)`, `putSnapshot`, `dropSnapshots` |
+| `src/processing/trends.ts` | `weeklyTrends(env, {week?, now?})` → `WeeklyTrends` (src/types.ts), `rebuildDailyStats` |
+| `src/processing/policies.ts` | `getSitePolicy`, `setSitePolicy`, `reportBlocked` |
+| `src/processing/classify.ts` | `classifyTask(env, {description, sites?, type_hint?, steps?})` → `{task_type, classifier}` |
+| `src/processing/ingest.ts` | `ingestTrace(env, agent, body, {occurredAt?, ctx?})`, `IngestError`, `IngestResult` |
+| `src/lib/normalize.ts` | `registrableDomain`, `normalizeModel`, `normalizeApp` |
+| `src/lib/auth.ts` | `requireAgent`, `optionalAgent`, `requireAdmin`, `agentByOwnerToken`, `clientIpHash` |
 
-Stubbed signatures are contracts: the owner implements them without changing the signature (adding optional params/exports is fine). Until a stub is replaced, code against its signature; re-test once the real one lands.
+These signatures are contracts: keep them stable (adding optional params/exports is fine).
 
-## Module ownership (one owner per file — edit ONLY files you own; create new files only under your own prefixes)
+## Module ownership
+This table governed the parallel build (one owner per file). The build is done; any agent may now edit any file, but the table is still the best map of which module does what.
+
 | Owner | Files |
 |---|---|
 | **UI-0** design system | `src/pages/kit.tsx` (dev-only `/_kit` gallery), `public/css/base.css`, `src/pages/layout.tsx`, `src/pages/components.tsx`, `src/pages/errors.tsx`, `src/lib/format.ts`, `public/js/common.js`, `public/favicon.svg`, `public/robots.txt` |
@@ -63,7 +65,7 @@ Stubbed signatures are contracts: the owner implements them without changing the
 
 If you need a change in a file you don't own (new type, new column, new route mount), **don't make it** — list it under `requests_for_lead` in your final report, and work around it locally meanwhile (e.g. a local type).
 
-Every module file already exists as a stub exporting `default` a `Hono<AppEnv>` sub-app; `src/index.tsx` mounts them:
+Every route module exports `default` a `Hono<AppEnv>` sub-app; `src/index.tsx` mounts them:
 - `/api/v1/agents` → agents.ts · `/api/v1/traces` → traces.ts · `/api/v1/recipes` → api/recipes.ts
 - `/api/public/stat-of-the-day` → daily.ts · `/api/public` → public.ts · `/api/claim` → claim.ts · `/api/owner` → owner.ts · `/api/admin` → admin.ts
 - `/card` → cards/routes.tsx

@@ -1,6 +1,6 @@
 export interface Bindings {
   DB: D1Database;
-  TRACES: R2Bucket;
+  TRACES?: R2Bucket; // optional: without it, masked raw traces live gzipped in D1 (src/lib/rawstore.ts)
   ASSETS: Fetcher;
   ENVIRONMENT: 'production' | 'development' | string;
   PUBLIC_ORIGIN: string;

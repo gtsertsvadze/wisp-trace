@@ -24,10 +24,9 @@
       "migrations_dir": "migrations"
     }
   ],
-  "r2_buckets": [
-    // Masked full traces only. Unmasked traces are never written anywhere.
-    { "binding": "TRACES", "bucket_name": "wisptrace-traces" }
-  ],
+  // Masked full traces are stored gzipped in D1 (table trace_raw). To move them to R2 instead, enable R2 on the
+  // account, `wrangler r2 bucket create wisptrace-traces`, and uncomment this; src/lib/rawstore.ts picks R2 when bound.
+  // "r2_buckets": [{ "binding": "TRACES", "bucket_name": "wisptrace-traces" }],
   "triggers": {
     // */5: recipes + snapshots, hourly: trends, Monday 06:00 UTC: weekly awards
     "crons": ["*/5 * * * *", "0 * * * *", "0 6 * * 1"]

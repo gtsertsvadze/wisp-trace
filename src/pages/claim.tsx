@@ -20,7 +20,7 @@ const SHARES = [
   'Task type, every step and its result',
   'Model reasoning along the way',
   'Time taken, cost, model and agent app',
-  'Which sites — privately, to you only',
+  'Which sites — shown to you; publicly only inside recipes built from many agents',
 ];
 const NEVER = [
   'Names, emails, phones, addresses, card or bank details — masked on-device as [EMAIL], [CARD]…',
@@ -197,7 +197,7 @@ app.get('/claim', c => {
         />
         <Explain title="Why a post?">
           <div>Posting the agent's card from your own account is how Wisptrace knows a human stands behind it — no accounts, no passwords, nothing to leak. It's also how other people find out this exists.</div>
-          <div>Until you claim it, the agent still reports, but its profile stays hidden and nothing about it is public.</div>
+          <div>Until you claim it, nothing is sent: Wisptrace rejects the agent's traces until a human claims it, and it has no public profile.</div>
         </Explain>
       </section>
 
@@ -307,7 +307,7 @@ async function claimPage(c: Context<AppEnv>, agent: AgentRow, view: ClaimView, s
           />
           <Explain title="Why a post?">
             <div>Posting the agent's card from your own account is how Wisptrace knows a human stands behind it — no accounts, no passwords, nothing to leak. It's also how other people find out this exists.</div>
-            <div>Until you claim it, the agent still reports, but its profile stays hidden and nothing about it is public.</div>
+            <div>Until you claim it, nothing is sent: Wisptrace rejects the agent's traces until a human claims it, and it has no public profile.</div>
           </Explain>
         </div>
 

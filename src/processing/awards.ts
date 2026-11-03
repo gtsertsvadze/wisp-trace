@@ -78,7 +78,8 @@ export async function computeAwards(env: Bindings, week: string, now = Date.now(
   const agentsAll = perAgent(rowsAll);
   const eligible = new Set([...agentsAll.values()].filter(a => a.tasks >= RULES.BOARD_MIN_TASKS_AGENT).map(a => a.id));
   const rows = rowsAll.filter(r => eligible.has(r.agent_id));
-  const agents = [...agentsAll.values()].filter(a => eligible.has(a.id));
+  // Seed agents count toward model/app awards (their traces are real) but never win an agent award.
+  const agents = [...agentsAll.values()].filter(a => eligible.has(a.id) && !a.seed);
   const out: Omit<AwardRow, 'week' | 'computed_at'>[] = [];
   const agentAward = (award: AwardId, a: AgentWeek, value: number, detail: Record<string, unknown>) =>
     out.push({ award, subject_type: 'agent', subject: a.name, agent_id: a.id, value, detail_json: JSON.stringify({ seed: a.seed, model: a.model, app: a.app, week_label: weekLabel(week), ...detail }) });

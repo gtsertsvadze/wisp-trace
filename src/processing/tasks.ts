@@ -2,23 +2,31 @@
 // its `tasks` row, and keep each task's crowd: the number of different humans behind it (each seed agent counts once).
 // A task's name is public only when its crowd reaches RULES.TASK_PUBLIC_MIN_CROWD.
 import type { Bindings } from '../env';
-import type { AgentRow, TaskRow, TaskSource } from '../types';
+import type { AgentRow, Outcome, TaskRow, TaskSource } from '../types';
 import { newId } from '../lib/ids';
 import { llmJson } from '../lib/llm';
 import { RULES } from '../lib/rules';
 import { isCircumvention, sanitizeStepText } from '../lib/sanitize';
 import {
-  fallbackName, genericDone, nameFromDescription, nameFromTag, nearlySame, similarity, slugify, type TaskName,
+  fallbackName, genericDone, genericTry, nameFromDescription, nameFromTag, nearlySame, plainVerb, similarity, slugify, type TaskName,
 } from '../lib/tasks';
 
 export const isPublicTask = (t: Pick<TaskRow, 'crowd'>) => t.crowd >= RULES.TASK_PUBLIC_MIN_CROWD;
 
-/** Feed wording: the specific past-tense name once public, else the verb only ("Cancelled something"). */
-export const publicDone = (t: Pick<TaskRow, 'crowd' | 'done_label' | 'verb'>) => (isPublicTask(t) ? t.done_label : genericDone(t.verb));
+type Named = Pick<TaskRow, 'crowd' | 'label' | 'done_label' | 'verb'>;
+
+/** Wording of one trace: past tense when done ("Cancelled Netflix subscription"), plain when not ("Cancel Netflix
+ *  subscription" + its failed / handed back chip). Without a public name, only the verb: "Cancelled something". */
+function wording(t: Named, outcome: Outcome, named: boolean): string {
+  if (outcome === 'done') return named ? t.done_label : genericDone(t.verb);
+  return named ? t.label : genericTry(t.verb);
+}
+
+/** Feed wording: the specific name once public. */
+export const publicDone = (t: Named, outcome: Outcome) => wording(t, outcome, isPublicTask(t));
 
 /** Name on a public profile: also hidden for sensitive tasks (a profile is tied to its owner's handle). */
-export const profileDone = (t: Pick<TaskRow, 'crowd' | 'done_label' | 'verb' | 'sensitive'>) =>
-  (isPublicTask(t) && !t.sensitive ? t.done_label : genericDone(t.verb));
+export const profileDone = (t: Named & Pick<TaskRow, 'sensitive'>, outcome: Outcome) => wording(t, outcome, isPublicTask(t) && !t.sensitive);
 
 /** Columns to select (as k.*) next to traces t for every public rendering of a task. */
 export const TASK_COLS = 'k.label AS task_label, k.done_label AS task_done, k.verb AS task_verb, k.crowd AS task_crowd, k.sensitive AS task_sensitive, k.slug AS task_slug';
@@ -83,8 +91,11 @@ export async function findOrCreateTask(
     task = results.find(t => nearlySame(name, { verb: t.verb, brand: t.brand, words: wordsOf(t) })) ?? null;
   }
   if (task) {
-    // A heuristic label gives way to an agent's own wording, as long as it adds no words the task doesn't have.
-    if (task.label_source === 'heuristic' && source === 'agent') {
+    // A heuristic label gives way to an agent's own wording, and a synonym verb ("Unsubscribe from X") to the plain
+    // one ("Cancel X subscription"), as long as the new wording adds no words the task doesn't have.
+    const better = source === 'agent' && (task.label_source === 'heuristic'
+      || (plainVerb(name) && !plainVerb({ verb: task.verb, label: task.label })));
+    if (better) {
       const have = new Set(wordsOf(task));
       if (name.words.every(w => have.has(w)) && name.label !== task.label) {
         await db.prepare("UPDATE tasks SET label = ?, done_label = ?, label_source = 'agent' WHERE id = ?")

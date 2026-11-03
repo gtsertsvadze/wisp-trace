@@ -166,7 +166,7 @@ export async function agentProfile(env: Bindings, name: string, now = Date.now()
   const recentTasks: RecentTask[] = await Promise.all(recentRows.map(async r => {
     return {
       key: await opaqueKey(r.id, env.HASH_SALT ?? ''),
-      task: profileDone(taskOf(r)), outcome: r.outcome, ticks: r.ticks ?? '',
+      task: profileDone(taskOf(r), r.outcome), outcome: r.outcome, ticks: r.ticks ?? '',
       steps: r.steps_count, mins: Math.max(1, Math.ceil((r.duration_s ?? 0) / 60)), day: r.day,
     };
   }));
@@ -212,7 +212,7 @@ export async function agentFeedItems(env: Bindings, name: string, now = Date.now
   const items = await Promise.all(results.map(async r => {
     return {
       key: await opaqueKey(r.id, env.HASH_SALT ?? ''),
-      task: profileDone(taskOf(r)), outcome: r.outcome, ticks: r.ticks ?? '',
+      task: profileDone(taskOf(r), r.outcome), outcome: r.outcome, ticks: r.ticks ?? '',
       steps: r.steps_count, mins: Math.max(1, Math.ceil((r.duration_s ?? 0) / 60)), day: r.day,
     };
   }));

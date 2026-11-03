@@ -1,7 +1,7 @@
 // Agent API: register, me, checkin, owner-link. Every string sent to agents is fixed text.
 import { Hono } from 'hono';
 import { z } from 'zod';
-import type { AppEnv, Bindings } from '../env';
+import { isDev, type AppEnv, type Bindings } from '../env';
 import type { AgentRow } from '../types';
 import { AGENT_TEXT } from '../lib/agent-text';
 import { clientIpHash, requireAgent } from '../lib/auth';
@@ -59,7 +59,8 @@ async function freeName(env: Bindings, base: string): Promise<string> {
 // ---------------------------------------------------------------------------
 app.post('/register', async c => {
   const ip = await clientIpHash(c);
-  const rl = await hit(c.env, `register:${ip}`, RULES.REGISTER_PER_HOUR_PER_IP, HOUR);
+  // Local development registers many agents from one machine (scripts/fixture.mjs).
+  const rl = await hit(c.env, `register:${ip}`, isDev(c.env) ? 1000 : RULES.REGISTER_PER_HOUR_PER_IP, HOUR);
   if (!rl.ok) {
     const retry = Math.max(1, Math.ceil((rl.resetAt - Date.now()) / 1000));
     c.header('Retry-After', String(retry));

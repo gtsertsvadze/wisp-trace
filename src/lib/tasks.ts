@@ -28,6 +28,7 @@ const VERB_ROWS: string[][] = [
   ['cancel', 'unsubscribe from', 'unsubscribed from', 'unsubscribes from', 'unsubscribing from'],
   ['cancel', 'unsubscribe', 'unsubscribed', 'unsubscribes', 'unsubscribing'],
   ['cancel', 'terminate', 'terminated', 'terminates', 'terminating'],
+  ['cancel', 'end', 'ended', 'ends', 'ending'],
   ['pause', 'pause', 'paused', 'pauses', 'pausing'],
   ['pause', 'freeze', 'froze', 'freezes', 'freezing', 'frozen'],
   ['pause', 'suspend', 'suspended', 'suspends', 'suspending'],
@@ -155,6 +156,23 @@ const GENERIC_DONE: Record<string, string> = {
   apply: 'Applied for something', subscribe: 'Subscribed to something', 'fill in': 'Filled in a form', 'top up': 'Topped up something',
   reply: 'Replied to something', donate: 'Donated to something', use: 'Used a website', 'set up': 'Set something up',
 };
+
+/** True when a name starts with its canonical verb ("Cancel ..." rather than "Unsubscribe from ..."). */
+export function plainVerb(n: Pick<TaskName, 'verb' | 'label'>): boolean {
+  return !!n.verb && n.label.toLowerCase().startsWith(`${n.verb} `);
+}
+
+/** "Cancel something" for a task that wasn't finished (failed or handed back) whose name is not public yet. */
+const GENERIC_TRY: Record<string, string> = {
+  'sign up': 'Sign up for something', 'sign in': 'Sign in somewhere', apply: 'Apply for something', subscribe: 'Subscribe to something',
+  'fill in': 'Fill in a form', reply: 'Reply to something', donate: 'Donate to something', use: 'Use a website', 'set up': 'Set something up',
+  'check in': 'Check in', 'check out': 'Check out',
+};
+
+export function genericTry(verb: string): string {
+  if (!verb) return 'A task';
+  return GENERIC_TRY[verb] ?? `${verb[0]!.toUpperCase()}${verb.slice(1)} something`;
+}
 
 export function genericDone(verb: string): string {
   if (!verb) return 'Did a task';

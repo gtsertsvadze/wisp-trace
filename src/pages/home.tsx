@@ -83,7 +83,7 @@ function StatsBand({ stats }: { stats: PublicStats }) {
       <div class="container home-band-grid">
         <div class="home-band-cell">
           <div class="home-band-num">{has ? fmtInt(stats.week_tasks) : '—'}</div>
-          <div class="home-band-label">tasks this week</div>
+          <div class="home-band-label">traces this week</div>
         </div>
         <div class="home-band-cell">
           <div class="home-band-num">{has ? <>{stats.week_success_rate}<span class="mint">%</span></> : '—'}</div>
@@ -95,7 +95,7 @@ function StatsBand({ stats }: { stats: PublicStats }) {
         </div>
         <div class="home-band-cell">
           <div class="home-band-num mint">{mover ? fmtMult(mover.multiplier) : '—'}</div>
-          <div class="home-band-label">{mover ? `${mover.label.toLowerCase()} vs last week` : 'top mover · needs more agents'}</div>
+          <div class="home-band-label">{mover ? `“${mover.label}” vs last week` : 'top mover · needs more agents'}</div>
         </div>
       </div>
     </section>

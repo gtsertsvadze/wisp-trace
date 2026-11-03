@@ -5,9 +5,9 @@
 //   node scripts/devserver.mjs stop  --port 8711
 //   node scripts/devserver.mjs sql   --port 8711 "SELECT count(*) FROM traces"
 //
-// start: applies migrations to the state dir, optionally loads the demo fixture (scripts/fixture.mjs,
-// local only), launches wrangler dev in the background (log: .wrangler/logs/dev-<port>.log) and waits
-// until it answers. --fresh wipes the state dir first.
+// start: applies migrations to the state dir, launches wrangler dev in the background (log:
+// .wrangler/logs/dev-<port>.log), waits until it answers, and with --fixture fills it with demo data through
+// the real API (scripts/fixture.mjs, local only). --fresh wipes the state dir first.
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -60,14 +60,6 @@ async function start() {
   mkdirSync(dirname(pidFile), { recursive: true });
   mkdirSync(dirname(logFile), { recursive: true });
   wrangler(['d1', 'migrations', 'apply', 'DB', '--local', '--persist-to', state]);
-  if (arg('fixture', false)) {
-    const fx = join(root, 'scripts', 'fixture.mjs');
-    if (!existsSync(fx)) throw new Error('scripts/fixture.mjs does not exist yet');
-    const out = join(root, '.wrangler', `fixture-${port}.sql`);
-    const r = spawnSync(process.execPath, [fx, '--out', out], { cwd: root, stdio: 'inherit' });
-    if (r.status !== 0) throw new Error('fixture.mjs failed');
-    wrangler(['d1', 'execute', 'DB', '--local', '--persist-to', state, '--file', out, '--yes']);
-  }
   const log = openSync(logFile, 'w');
   const child = spawn(
     process.execPath,
@@ -78,6 +70,14 @@ async function start() {
   writeFileSync(pidFile, String(child.pid));
   const ok = await waitReady();
   console.log(ok ? `ready http://127.0.0.1:${port}  (state ${state}, log ${logFile})` : `NOT READY after 60s, see ${logFile}`);
+  if (ok && arg('fixture', false)) {
+    const fx = join(root, 'scripts', 'fixture.mjs');
+    const creds = join(root, '.wrangler', `fixture-${port}-creds.sql`);
+    const r = spawnSync(process.execPath, [fx, '--url', `http://127.0.0.1:${port}`, '--creds-sql', creds], { cwd: root, stdio: 'inherit' });
+    if (r.status !== 0) throw new Error('fixture.mjs failed');
+    wrangler(['d1', 'execute', 'DB', '--local', '--persist-to', state, '--file', creds, '--yes']);
+    console.log('fixture loaded: owner page /owner/wto_devQuietfox7OwnerToken0000000000, claim page /claim/ne7-test');
+  }
   process.exit(ok ? 0 : 1);
 }
 

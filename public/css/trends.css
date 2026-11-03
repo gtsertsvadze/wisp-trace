@@ -21,10 +21,10 @@
 
 /* movers */
 .tr-mover {
-  display: grid; grid-template-columns: minmax(120px, 180px) minmax(60px, 1fr) 64px; gap: 16px; align-items: center;
+  display: grid; grid-template-columns: minmax(140px, 260px) minmax(60px, 1fr) 64px; gap: 16px; align-items: center;
   padding: 11px 0; border-top: 1px solid var(--line);
 }
-.tr-mover-label { font-weight: 600; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.tr-mover-label { font-weight: 600; font-size: 15px; line-height: 1.25; min-width: 0; overflow-wrap: anywhere; }
 .tr-track { position: relative; height: 18px; background: rgba(236, 238, 246, .06); border-radius: 4px; }
 .tr-fill { position: absolute; left: 0; top: 0; height: 18px; border-radius: 4px; background: var(--slate-bar); }
 .tr-fill.is-up { background: var(--mint); }
@@ -73,7 +73,7 @@
   .tr-grid { grid-template-columns: minmax(0, 1fr); }
   .tr-h1 { margin-bottom: 28px; }
   .tr-sub { margin: -12px 0 28px; }
-  .tr-mover { grid-template-columns: minmax(96px, 128px) minmax(40px, 1fr) 54px; gap: 10px; }
+  .tr-mover { grid-template-columns: minmax(110px, 1.3fr) minmax(40px, 1fr) 54px; gap: 10px; }
   .tr-mover-label { font-size: 14px; }
   .tr-mult { font-size: 16px; }
   .tr-cols { height: 120px; gap: 4px; }

@@ -151,7 +151,7 @@ app.get('/trends', async c => {
               return (
                 <div class="tr-top">
                   <span class="tr-top-rank">{pad2(t.rank)}</span>
-                  <span class="tr-top-label">{t.label}{t.trending ? <span class="mint" title="trending"> ↑</span> : null}</span>
+                  <span class="tr-top-label">{t.label}</span>
                   <span class="tr-top-n">{fmtInt(t.traces)}</span>
                   <span class={delta.up ? 'tr-top-delta is-up' : 'tr-top-delta'}>{delta.text}</span>
                 </div>
@@ -165,7 +165,7 @@ app.get('/trends', async c => {
           </HighlightCard>
           <div class="tr-how">
             <strong>How we count</strong>
-            <span>Traces are totalled by task type. A number is published only once at least {K} different agents are behind it.</span>
+            <span>Traces are totalled by specific task (“Cancel Netflix subscription”). A number is published only once at least {K} different agents are behind it.</span>
             <span>The sample is agents whose humans installed Wisptrace. It skews toward power users and is not a census of all AI use.</span>
             <a href="/methodology" class="link-cta">Full methodology →</a>
           </div>

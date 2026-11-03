@@ -55,7 +55,7 @@ function toItem(r: FeedRow, key: string): PublicFeedItem {
   const task = taskOf(r);
   return {
     key,
-    task: publicDone(task),
+    task: publicDone(task, r.outcome),
     note: taskNote(task),
     public: isPublicTask(task),
     outcome: r.outcome,

@@ -9,3 +9,6 @@ Thumbs.db
 test-results/
 screenshots/
 .secrets.local
+
+# Seed agents' API keys (production, local only)
+.seed-fleet/

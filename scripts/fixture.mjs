@@ -738,20 +738,20 @@ const awards = [];
 {
   const hw = eligible.map(a => ({ a, list: inWeek(W_LAST, t => t.agent_id === a.id) })).sort((x, y) => y.list.length - x.list.length)[0];
   awards.push({ award: 'hardest_working', subject_type: 'agent', subject: hw.a.name, agent_id: hw.a.id, value: hw.list.length,
-    detail: { tasks: hw.list.length, success_rate: rate(hw.list), minutes: mins(hw.list), app: hw.a.app, model: hw.a.model, owner_handle: hw.a.owner } });
+    detail: { tasks: hw.list.length, rate: rate(hw.list), minutes: mins(hw.list), app: hw.a.app, model: hw.a.model, owner_handle: hw.a.owner } });
   const restaurants = groupBoard('model', t => t.task_type === 'restaurant_booking');
   const mr = restaurants[0];
   awards.push({ award: 'most_reliable_model', subject_type: 'model', subject: mr.name, agent_id: null, value: mr.rate,
-    detail: { task_type: 'restaurant_booking', group: tax('restaurant_booking').trend, label: 'restaurants', success_rate: mr.rate, tasks: mr.list.length, agents: mr.agents,
+    detail: { task_type: 'restaurant_booking', group: tax('restaurant_booking').trend, label: 'restaurants', rate: mr.rate, tasks: mr.list.length, agents: mr.agents,
       retries_per_task: Math.round((sum(mr.list.map(t => (t.ticks.match(/r/g) || []).length)) / mr.list.length) * 100) / 100,
-      runner_up: restaurants[1] ? { model: restaurants[1].name, success_rate: restaurants[1].rate } : null } });
+      runner_up: restaurants[1] ? { model: restaurants[1].name, rate: restaurants[1].rate } : null } });
   const cb = eligible.map(a => ({ a, cur: inWeek(W_LAST, t => t.agent_id === a.id), prev: inWeek(W_PREV, t => t.agent_id === a.id) }))
     .filter(x => x.cur.length >= 10 && x.prev.length >= 10).map(x => ({ ...x, gain: rate(x.cur) - rate(x.prev) })).sort((x, y) => y.gain - x.gain)[0];
   awards.push({ award: 'comeback', subject_type: 'agent', subject: cb.a.name, agent_id: cb.a.id, value: Math.round(cb.gain * 10) / 10,
     detail: { prev_rate: rate(cb.prev), rate: rate(cb.cur), gain: Math.round(cb.gain * 10) / 10, tasks: cb.cur.length, prev_tasks: cb.prev.length, app: cb.a.app, model: cb.a.model } });
   const ta = groupBoard('app')[0];
   awards.push({ award: 'top_app', subject_type: 'app', subject: ta.name, agent_id: null, value: ta.rate,
-    detail: { success_rate: ta.rate, tasks: ta.list.length, agents: ta.agents, median_minutes: median(ta.list.map(t => Math.max(1, Math.ceil(t.duration_s / 60)))) } });
+    detail: { rate: ta.rate, tasks: ta.list.length, agents: ta.agents, median_minutes: median(ta.list.map(t => Math.max(1, Math.ceil(t.duration_s / 60)))) } });
   const ls = eligible.map(a => ({ a, n: streakEnding(a, weekEndDay) })).sort((x, y) => y.n - x.n)[0];
   awards.push({ award: 'longest_streak', subject_type: 'agent', subject: ls.a.name, agent_id: ls.a.id, value: ls.n,
     detail: { streak_days: ls.n, best_streak: bestStreak(ls.a), as_of: weekEndDay, app: ls.a.app, model: ls.a.model } });

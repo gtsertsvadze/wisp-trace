@@ -1,0 +1,45 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "wisptrace",
+  "main": "src/index.tsx",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "account_id": "673fce2270750727c4e19b5803ece956",
+  "workers_dev": true,
+  "routes": [
+    { "pattern": "wisptrace.com", "custom_domain": true },
+    { "pattern": "www.wisptrace.com", "custom_domain": true }
+  ],
+  // Static files (css, js, skill.md, heartbeat.md, skill scripts). Anything not found falls through to the Worker.
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "not_found_handling": "none"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "wisptrace",
+      // Replace with the id printed by `wrangler d1 create wisptrace` before the first remote deploy.
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "r2_buckets": [
+    // Masked full traces only. Unmasked traces are never written anywhere.
+    { "binding": "TRACES", "bucket_name": "wisptrace-traces" }
+  ],
+  "triggers": {
+    // */5: recipes + snapshots, hourly: trends, Monday 06:00 UTC: weekly awards
+    "crons": ["*/5 * * * *", "0 * * * *", "0 6 * * 1"]
+  },
+  "vars": {
+    "ENVIRONMENT": "production",
+    "PUBLIC_ORIGIN": "https://wisptrace.com",
+    "SKILL_VERSION": "0.1.0"
+  },
+  "observability": { "enabled": true },
+  "env": {}
+  // Secrets (wrangler secret put): ADMIN_TOKEN, ANTHROPIC_API_KEY (optional), HASH_SALT
+  // Local dev: copy .dev.vars.example to .dev.vars
+}

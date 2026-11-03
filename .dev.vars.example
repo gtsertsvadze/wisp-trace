@@ -1,0 +1,8 @@
+ENVIRONMENT=development
+PUBLIC_ORIGIN=http://localhost:8787
+ADMIN_TOKEN=dev-admin-token
+HASH_SALT=dev-salt
+# Optional: enables LLM task classification and recipe synthesis. Heuristics are used without it.
+# ANTHROPIC_API_KEY=sk-ant-...
+# Local only: accept post_url "dev://<handle>" in the claim flow instead of a real X/Bluesky post.
+DEV_CLAIM_BYPASS=1

@@ -8,11 +8,12 @@ import type { AppEnv } from '../env';
 import type { DeadEnd, RecipeStep } from '../types';
 import {
   type BlockedSite, type CardStatus, type IndexStatus, type RecipeCard, type RecipeDetail, type TrustMark,
-  getRecipe, listRecipes, matchesQuery, parseIndexStatus,
+  getRecipe, listRecipes, matchesQuery, normalizeSite, parseIndexStatus,
 } from '../data/recipes';
 import { fmtInt, minsFromSeconds, pad2 } from '../lib/format';
 import { RULES } from '../lib/rules';
 import { ago, dayLabel } from '../lib/time';
+import { getSitePolicy } from '../processing/policies';
 import { notFoundPage } from './errors';
 import { Breadcrumb, Button, Card, Chip, CopyButton, EmptyState, Kicker, Tag } from './components';
 import { Layout, absUrl, page } from './layout';
@@ -26,6 +27,11 @@ const STATUS_INK: Record<CardStatus, string> = { trusted: 'mint', forming: 'dim'
 const MAX_CARD_SQUARES = 24;
 
 const plural = (n: number, one: string, many = `${one}s`) => `${fmtInt(n)} ${n === 1 ? one : many}`;
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+/** '3 Nov 2026' */
+const fullDate = (ms: number) => { const d = new Date(ms); return `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}`; };
+/** 'Cancel Netflix subscription' -> 'cancel Netflix subscription' (keeps 'PS5 ...', 'IKEA ...'). */
+const lowerFirst = (s: string) => (/^[A-Z][a-z]/.test(s) ? s[0]!.toLowerCase() + s.slice(1) : s);
 const medianMins = (s: number | null) => (s === null ? null : minsFromSeconds(s));
 
 // ---------------------------------------------------------------- index
@@ -255,11 +261,18 @@ function RecipePageView({ c, r }: { c: Context<AppEnv>; r: RecipeDetail }) {
   const now = Date.now();
   const mins = medianMins(r.median_s);
   const lookup = `Before you start, fetch the Wisptrace recipe: GET ${absUrl(c, `/api/v1/recipes?task=${encodeURIComponent(r.title)}&site=${encodeURIComponent(r.site)}`)}`;
-  const description = `${r.title} on ${r.site}: the path ${fmtInt(r.agents_succeeded)} independent agents succeeded with, plus the dead ends to avoid. ${r.status === 'trusted' ? 'Trusted recipe.' : r.status === 'outdated' ? 'Currently out of date.' : 'Forming recipe.'}`;
+  // Search titles: "How to cancel Netflix subscription with an AI agent, verified by 7 agents, updated 3 Nov 2026".
+  const n = r.agents_succeeded;
+  const updated = fullDate(r.last_confirmed_at ?? r.created_at);
+  const verified = `verified by ${fmtInt(n)} ${n === 1 ? 'agent' : 'agents'}`;
+  const seoTitle = `How to ${lowerFirst(r.title)} with an AI agent, ${verified}, updated ${updated}`;
+  const description = `How to ${lowerFirst(r.title)} on ${r.site}: the path ${fmtInt(n)} different people's AI agents succeeded with, step by step, plus the dead ends to avoid. ${r.status === 'trusted' ? 'Trusted recipe.' : r.status === 'outdated' ? 'Currently out of date: the site changed.' : 'Forming recipe.'} Last confirmed ${updated}.`;
   return (
     <Layout
       c={c}
-      title={`${r.title} on ${r.site}`}
+      title={seoTitle}
+      ogTitle={`How to ${lowerFirst(r.title)} with an AI agent · ${verified}`}
+      canonical={`/recipes/${encodeURIComponent(r.site)}/${encodeURIComponent(r.slug)}${r.is_current ? '' : `?v=${r.version}`}`}
       description={description}
       active="recipes"
       css={['recipes']}
@@ -268,7 +281,7 @@ function RecipePageView({ c, r }: { c: Context<AppEnv>; r: RecipeDetail }) {
       <Breadcrumb items={[{ label: 'Recipes', href: '/recipes' }, { label: r.site }, { label: r.slug }]} />
       <div class="rc-head">
         <div>
-          <div class="mono rc-site">{r.site}</div>
+          <a href={`/sites/${encodeURIComponent(r.site)}`} class="mono rc-site">{r.site}</a>
           <h1 class="rc-h1">{r.title}</h1>
         </div>
         <div class="rc-actions">
@@ -372,6 +385,37 @@ function BlockedPageView({ c, b }: { c: Context<AppEnv>; b: BlockedSite }) {
     </Layout>
   );
 }
+
+// One page per site: its recipes and whether it allows agents.
+app.get('/sites/:site', async c => {
+  const site = normalizeSite(c.req.param('site'));
+  if (!site) return notFoundPage(c);
+  const [{ items }, policy] = await Promise.all([listRecipes(c.env), getSitePolicy(c.env, site)]);
+  const cards = items.filter(r => r.site === site);
+  if (!cards.length && !policy) return notFoundPage(c);
+  const now = Date.now();
+  const blocks = policy?.policy === 'blocks';
+  const live = cards.filter(r => r.status === 'trusted' || r.status === 'forming').length;
+  const description = blocks
+    ? `${site} does not allow AI agents. Wisptrace publishes no recipes for it; agents hand the task back to their human.`
+    : `What AI agents do on ${site}: ${plural(live, 'recipe')} built from many agents' real traces, with the dead ends to avoid.`;
+  return page(c,
+    <Layout c={c} title={`${site}: recipes for AI agents`} description={description} active="recipes" css={['recipes']} canonical={`/sites/${site}`}
+      ogImage={cards[0] && !blocks ? `/card/recipe/${encodeURIComponent(site)}/${encodeURIComponent(cards[0].slug)}.png` : undefined}>
+      <Breadcrumb items={[{ label: 'Recipes', href: '/recipes' }, { label: site }]} />
+      <div class="page-title rc-title">
+        <Kicker>{blocks ? 'site blocks agents' : `${plural(live, 'recipe')} · ${policy?.policy === 'allows' ? 'allows agents' : 'no policy on record'}`}</Kicker>
+        <h1 class="h1">{site}</h1>
+        <p class="lead">{description}</p>
+      </div>
+      {cards.length ? (
+        <div class="rc-grid">{cards.map(r => <RecipeCardView r={r} now={now} />)}</div>
+      ) : (
+        <EmptyState title="No recipes yet" class="rc-empty">Recipes appear once {RULES.RECIPE_MIN_AGENTS_TO_PUBLISH} different people's agents succeed at the same task here.</EmptyState>
+      )}
+    </Layout>,
+  );
+});
 
 app.get('/recipes/:site/:slug', async c => {
   const vRaw = c.req.query('v');

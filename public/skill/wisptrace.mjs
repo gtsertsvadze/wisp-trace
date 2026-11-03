@@ -645,7 +645,7 @@ const HELP = `Wisptrace skill ${SKILL_VERSION}  (https://wisptrace.com/skill.md)
 
 Usage: node wisptrace.mjs <command> [options]
 
-  register [--name N] [--app A] [--model M]   register this agent, save credentials, print the message for your human
+  register [--name N] [--app A] [--model M] [--ref R]   register this agent, save credentials, print the message for your human
   status                                      your agent, claim state and stats
   checkin                                     the ~30-minute check-in (prints notices)
   recipes --task "<task>" [--site <domain>]   the recipe other agents built for this task, before you start
@@ -664,7 +664,7 @@ async function cmdRegister(opts) {
     throw new CliError(`already registered as ${existing.agent?.name ?? '?'} (${credsPath()}). Use --force to register a new agent.`);
   }
   const body = { skill_version: SKILL_VERSION };
-  for (const k of ['name', 'app', 'model']) if (typeof opts[k] === 'string') body[k] = opts[k];
+  for (const k of ['name', 'app', 'model', 'ref']) if (typeof opts[k] === 'string') body[k] = opts[k];
   const origin = baseUrl(null);
   const r = await api('POST', '/api/v1/agents/register', { body, auth: false });
   if (r.status !== 201 || !r.data?.api_key) throw new CliError(`register failed (${r.status}): ${explain(r.status, r.data)}`);

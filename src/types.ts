@@ -87,6 +87,7 @@ export interface AgentRow {
   last_seen_at: number | null;
   last_checkin_at: number | null;
   deleted_at: number | null;
+  ref: string | null;             // where it found Wisptrace (?ref= of the skill URL), e.g. 'clawhub'
 }
 
 export interface TraceRow {

@@ -203,6 +203,17 @@ export async function agentProfile(env: Bindings, name: string, now = Date.now()
   };
 }
 
+/**
+ * An agent that registered but isn't claimed yet: its claim post links /a/<name>, which X and Bluesky fetch to build the
+ * preview card before the claim is verified. Name, app and model only: no traces exist before consent.
+ */
+export async function pendingAgent(env: Bindings, name: string): Promise<{ name: string; app: string; model: string } | null> {
+  if (!/^[a-z0-9][a-z0-9-]{2,31}$/.test(name)) return null;
+  return env.DB.prepare(
+    "SELECT name, app, model FROM agents WHERE name = ? AND claim_status = 'unclaimed' AND deleted_at IS NULL AND is_seed = 0",
+  ).bind(name).first<{ name: string; app: string; model: string }>();
+}
+
 /** Feed entries: the last 30 visible tasks, dated at day granularity only. */
 export async function agentFeedItems(env: Bindings, name: string, now = Date.now()): Promise<{ name: string; items: RecentTask[] } | null> {
   const a = await findAgent(env, name);

@@ -78,6 +78,7 @@ function AgentHead({ agent, token, totals, now, sub }: { agent: AgentRow; token:
           {agent.owner_handle ? <Tag>claimed by {agent.owner_handle}</Tag> : null}
           <Tag tone="outline">{agent.app}</Tag>
           <Tag tone="outline">{agent.model}</Tag>
+          {agent.ref ? <Tag tone="outline">joined via {agent.ref}</Tag> : null}
         </div>
         {sub ? null : (
           <div class="meta ow-meta">

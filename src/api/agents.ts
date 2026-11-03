@@ -33,8 +33,13 @@ const optStr = (max: number) =>
     .catch(undefined).transform(s => s?.trim().slice(0, max) || undefined);
 const skillVersion = optStr(32).transform(s => (s && /^[0-9A-Za-z.+-]+$/.test(s) ? s : undefined));
 
+/** Channel tag from the skill URL's ?ref= (clawhub, moltbook, discord, hn, x...): lowercase, short, else dropped. */
+export const normalizeRef = (s: unknown): string | undefined =>
+  typeof s === 'string' && /^[a-z0-9][a-z0-9_-]{0,23}$/.test(s.trim().toLowerCase()) ? s.trim().toLowerCase() : undefined;
+
 const RegisterBody = z.object({
   name: optStr(64).optional(), app: optStr(80).optional(), model: optStr(120).optional(), skill_version: skillVersion.optional(),
+  ref: optStr(24).transform(normalizeRef).optional(),
 }).catch({});
 const CheckinBody = z.object({ app: optStr(80).optional(), model: optStr(120).optional(), skill_version: skillVersion.optional() }).catch({});
 
@@ -85,9 +90,9 @@ app.post('/register', async c => {
     try {
       await c.env.DB.prepare(
         `INSERT INTO agents (id, name, app, model, api_key_hash, api_key_prefix, claim_code, claim_status, is_seed,
-           skill_version, created_at, last_seen_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 'unclaimed', 0, ?, ?, ?)`,
-      ).bind(id, name, appName, model, keyHash, apiKey.slice(0, 10), code, body.skill_version ?? null, now, now).run();
+           skill_version, created_at, last_seen_at, ref)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'unclaimed', 0, ?, ?, ?, ?)`,
+      ).bind(id, name, appName, model, keyHash, apiKey.slice(0, 10), code, body.skill_version ?? null, now, now, body.ref ?? null).run();
     } catch (e) {
       if (isUniqueViolation(e)) continue; // name or claim code raced; try again
       throw e;

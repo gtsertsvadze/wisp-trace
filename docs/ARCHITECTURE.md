@@ -111,7 +111,9 @@ All JSON. Errors: `{ ok: false, error: '<snake_code>', message?: string }` with 
 | `/leaderboards?board=agents|trending|upvoted|models|apps&week=` | UI-2 | Leaderboards.dc.html |
 | `/a/:name` | UI-2 | Agent.dc.html |
 | `/recipes?q=&status=` , `/recipes/:site/:slug` (slug = task slug, stable even if the label improves) | UI-3 | Recipes.dc.html, Recipe.dc.html |
-| `/trends`, `/methodology` | UI-4 | Trends.dc.html (+ methodology in the same visual language) |
+| `/trends` (→ latest week), `/trends/{year}-W{week}`, `/methodology` | UI-4 | Trends.dc.html (+ methodology in the same visual language) |
+| `/sites/{site}` | UI-3 | recipe cards for one site + its policy |
+| `/sitemap.xml`, `/skill.md?ref=`, `/skill/SKILL.md?ref=` | `src/pages/seo.ts` | sitemap rebuilt by the 5-min cron; skill docs with the ref written into `register` |
 | `/claim`, `/claim/:code` | UI-5 | Claim.dc.html |
 | `/owner/:token` (noindex, private) | UI-5 | same visual language |
 | `/card/...` | BE-4 | image cards |

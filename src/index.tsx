@@ -23,6 +23,7 @@ import trends from './pages/trends';
 import claim from './pages/claim';
 import owner from './pages/owner';
 import kit from './pages/kit';
+import seo from './pages/seo';
 
 const app = new Hono<AppEnv>();
 
@@ -55,6 +56,9 @@ app.route('/api/admin', adminApi);
 
 // Image cards (/card/...)
 app.route('/card', cards);
+
+// Sitemap and the skill docs with ?ref= channel tracking
+app.route('/', seo);
 
 // Pages
 app.route('/', home);

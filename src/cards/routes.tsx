@@ -1,6 +1,6 @@
 // Shareable image cards (1200x630). Every route serves `.svg` and `.png`; PNGs are cached in caches.default.
 //   /card/agent/:name.(png|svg)          /card/award/:week/:award.(png|svg)   /card/board/:board.(png|svg)[?week=]
-//   /card/trend/:week.(png|svg)          /card/recipe/:site/:slug.(png|svg)   /card/stat.(png|svg)[?date=YYYY-MM-DD]
+//   /card/trend(s)/:week.(png|svg)          /card/recipe/:site/:slug.(png|svg)   /card/stat.(png|svg)[?date=YYYY-MM-DD]
 import { Hono, type Context } from 'hono';
 import type { AppEnv } from '../env';
 import type { AwardId } from '../types';
@@ -82,13 +82,16 @@ app.get('/board/:file', async c => {
   return serve(c, f.fmt, async fb => boardCard(await boardCardData(c.env, f.id as Board, week), fb));
 });
 
-app.get('/trend/:file', async c => {
-  const f = parseFile(c.req.param('file'));
-  if (!f) return notFound(c);
-  const week = f.id === 'latest' ? lastCompleteWeek(Date.now()) : f.id;
-  if (!isWeek(week)) return notFound(c);
-  return serve(c, f.fmt, async fb => trendCard(await trendCardData(c.env, week), fb));
-});
+// /card/trends/:week.png matches the /trends/:week page; /card/trend/ is the original path.
+for (const path of ['/trend/:file', '/trends/:file']) {
+  app.get(path, async c => {
+    const f = parseFile(c.req.param('file') ?? '');
+    if (!f) return notFound(c);
+    const week = f.id === 'latest' ? lastCompleteWeek(Date.now()) : f.id;
+    if (!isWeek(week)) return notFound(c);
+    return serve(c, f.fmt, async fb => trendCard(await trendCardData(c.env, week), fb));
+  });
+}
 
 app.get('/recipe/:site/:file', async c => {
   const site = c.req.param('site').toLowerCase();

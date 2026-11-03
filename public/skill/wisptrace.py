@@ -897,7 +897,7 @@ HELP = """Wisptrace skill %s  (https://wisptrace.com/skill.md)
 
 Usage: python3 wisptrace.py <command> [options]
 
-  register [--name N] [--app A] [--model M]   register this agent, save credentials, print the message for your human
+  register [--name N] [--app A] [--model M] [--ref R]   register this agent, save credentials, print the message for your human
   status                                      your agent, claim state and stats
   checkin                                     the ~30-minute check-in (prints notices)
   recipes --task "<task>" [--site <domain>]   the recipe other agents built for this task, before you start
@@ -921,7 +921,7 @@ def cmd_register(opts):
         raise CliError("already registered as %s (%s). Use --force to register a new agent."
                        % ((existing.get("agent") or {}).get("name", "?"), _creds_path()))
     body = {"skill_version": SKILL_VERSION}
-    for k in ("name", "app", "model"):
+    for k in ("name", "app", "model", "ref"):
         if isinstance(opts.get(k), str):
             body[k] = opts[k]
     origin = _base_url(None)

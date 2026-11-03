@@ -5,6 +5,7 @@ import { computeAwards } from './awards';
 import { rebuildDirtyGroups } from './recipes';
 import { dropSnapshots, putSnapshot } from './snapshots';
 import { weeklyTrends } from './trends';
+import { refreshSitemap } from '../pages/seo';
 
 export type JobName = 'recipes' | 'trends' | 'awards' | 'snapshots';
 
@@ -47,7 +48,7 @@ export async function runJobs(
         case 'snapshots': {
           const r = await env.DB.prepare("DELETE FROM snapshots WHERE (key LIKE 'trends:%' OR key LIKE 'board:%') AND computed_at < ?")
             .bind(Date.now() - STALE_MS).run();
-          result = { dropped: r.meta.changes ?? 0 };
+          result = { dropped: r.meta.changes ?? 0, sitemap_urls: await refreshSitemap(env, now) };
           break;
         }
         default:

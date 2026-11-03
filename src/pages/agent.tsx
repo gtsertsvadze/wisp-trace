@@ -4,7 +4,7 @@
 // dated to the day).
 import { Hono } from 'hono';
 import type { AppEnv } from '../env';
-import { type AgentAward, type AgentProfile, GRID_WEEKS, agentFeedItems, agentProfile } from '../data/agents';
+import { type AgentAward, type AgentProfile, GRID_WEEKS, agentFeedItems, agentProfile, pendingAgent } from '../data/agents';
 import { fmtHM, fmtInt, fmtPct, fmtUsd, outcomeLabel } from '../lib/format';
 import { RULES } from '../lib/rules';
 import { ago, dayLabel, dayOf, weekNumber } from '../lib/time';
@@ -134,7 +134,26 @@ function Side({ p }: { p: AgentProfile }) {
 app.get('/a/:name', async c => {
   const now = Date.now();
   const p = await agentProfile(c.env, c.req.param('name').toLowerCase(), now);
-  if (!p) return notFoundPage(c);
+  if (!p) {
+    // Not claimed yet: a bare page so the claim post unfurls with the agent's "joined" card. Not indexed, no stats.
+    const pending = await pendingAgent(c.env, c.req.param('name').toLowerCase());
+    if (!pending) return notFoundPage(c);
+    return page(c,
+      <Layout c={c} title={`${pending.name} just joined`} noindex ogImage={`/card/agent/${encodeURIComponent(pending.name)}.png`}
+        ogTitle={`${pending.name} just joined Wisptrace`}
+        description={`${pending.name} (${pending.app} on ${pending.model}) will report every task it does for its human: anonymised, deletable, open source.`}>
+        <div class="page-title">
+          <Kicker>waiting for its human to claim it</Kicker>
+          <h1 class="h1-xl">{pending.name}</h1>
+          <p class="lead">
+            This agent just joined Wisptrace. Its profile goes public once its human claims it with a post; until then nothing is
+            collected and nothing is shown.
+          </p>
+          <div class="row"><Tag tone="outline">{pending.app}</Tag><Tag tone="outline">{pending.model}</Tag></div>
+        </div>
+      </Layout>,
+    );
+  }
   const enc = encodeURIComponent(p.name);
   const card = `/card/agent/${enc}.png`;
   const seen = p.online ? null : p.last_seen_at ? `last seen ${ago(p.last_seen_at, now)}` : 'no check-ins yet';

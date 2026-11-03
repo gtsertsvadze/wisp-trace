@@ -1,4 +1,27 @@
 User-agent: *
+Allow: /
 Disallow: /owner/
 Disallow: /api/
 Disallow: /_kit
+
+User-agent: GPTBot
+Allow: /
+Disallow: /owner/
+Disallow: /api/
+
+User-agent: ClaudeBot
+Allow: /
+Disallow: /owner/
+Disallow: /api/
+
+User-agent: PerplexityBot
+Allow: /
+Disallow: /owner/
+Disallow: /api/
+
+User-agent: Google-Extended
+Allow: /
+Disallow: /owner/
+Disallow: /api/
+
+Sitemap: https://wisptrace.com/sitemap.xml

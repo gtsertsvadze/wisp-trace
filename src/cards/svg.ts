@@ -180,6 +180,9 @@ function rich(lines: { w: string; accent: boolean }[][], x: number, y: number, l
 }
 
 type ChipKind = 'mint' | 'outline' | 'coral' | 'dim';
+/** Shorten to `max` characters with an ellipsis (for mono labels whose width is chars x size x 0.6). */
+const clip = (s: string, max: number) => (s.length <= max ? s : `${s.slice(0, Math.max(1, max - 1))}…`);
+
 function chip(x: number, y: number, label: string, kind: ChipKind, size = 15): { svg: string; w: number } {
   const padX = size * 0.9, h = size * 2.1;
   const w = monoWidth(label, size) + padX * 2;
@@ -284,7 +287,8 @@ export function agentCard(d: AgentCardData, forBrowser = false): string {
   const ownerChip = d.seed
     ? { label: 'seed · run by Wisptrace', kind: 'mint' as const }
     : { label: `claimed by ${d.owner ?? 'its human'}`, kind: 'mint' as const };
-  let b = chips(X, 112, [ownerChip, { label: d.app, kind: 'outline' }, { label: d.model, kind: 'outline' }]);
+  // X shows cards at ~506px wide: chips at 17px, long handles/models shortened so the row never overflows.
+  let b = chips(X, 108, [{ ...ownerChip, label: clip(ownerChip.label, 44) }, { label: clip(d.app, 22), kind: 'outline' }, { label: clip(d.model, 26), kind: 'outline' }], 17);
   const size = fitSans(d.name, 112, CW, 800, -0.04);
   b += text(X - 4, 256, d.name, { size, weight: 800, ls: -0.04 * size, fill: C.bright });
 
@@ -303,23 +307,23 @@ export function agentCard(d: AgentCardData, forBrowser = false): string {
     if (i) b += `<rect x="${n(X + i * cw)}" y="${py + 20}" width="1" height="${ph - 40}" fill="${C.line}"/>`;
     b += richText(cx, py + 60, [{ text: s.v, fill: s.accent ? C.mint : C.text }, ...(s.unit ? [{ text: s.unit, fill: s.unit === '%' ? C.mint : C.mute }] : [])],
       { size: 46, mono: true, weight: 700, ls: -1.6 });
-    b += text(cx, py + 88, s.label, { size: 17, fill: C.mute });
+    b += text(cx, py + 90, s.label, { size: 20, fill: C.dim });
   });
 
   // activity grid (26 weeks x 7 days)
   const gy = 444, cell = 16, gap = 4;
-  b += kicker(X, 428, 'activity · 26 weeks', C.mute, 'start', 13);
+  b += kicker(X, 428, 'activity · 26 weeks', C.dim, 'start', 15);
   b += activityGrid(X, gy, cell, gap, d.grid);
 
   // best at
   const bx = X + 26 * (cell + gap) + 48, bw = R - bx;
-  b += kicker(bx, 428, 'best at', C.mute, 'start', 13);
+  b += kicker(bx, 428, 'best at', C.dim, 'start', 15);
   if (!d.bestAt.length) b += text(bx, gy + 30, 'No task types yet.', { size: 18, fill: C.mute });
   d.bestAt.slice(0, 3).forEach((t, i) => {
     const y = gy + 12 + i * 46;
     b += text(bx, y + 6, truncate(t.label, bw - 160, 19, 600), { size: 19, weight: 600 });
     b += text(R, y + 6, `${t.pct}%`, { size: 17, mono: true, weight: 700, anchor: 'end' });
-    b += text(R - 62, y + 6, `${fmtInt(t.tasks)} tasks`, { size: 14, mono: true, fill: C.mute, anchor: 'end' });
+    b += text(R - 62, y + 6, `${fmtInt(t.tasks)} tasks`, { size: 15, mono: true, fill: C.dim, anchor: 'end' });
     b += bar(bx, y + 18, bw, 4, t.pct / 100, i === 0 ? C.mint : C.slateBar, i === 0);
   });
 
@@ -340,8 +344,9 @@ function newAgentCard(d: AgentCardData, forBrowser: boolean): string {
   const tags: { label: string; kind: ChipKind }[] = [];
   if (d.seed) tags.push({ label: 'seed · run by Wisptrace', kind: 'mint' });
   else if (d.owner) tags.push({ label: `claimed by ${d.owner}`, kind: 'mint' });
-  const meta = `${d.app} · ${d.model} · day 1 — the grid fills as it works`;
-  b += text(X, metaY, meta, { size: 20, mono: true, fill: C.mute });
+  // Readable at X's ~506px preview: larger, brighter, and never wider than the card.
+  const meta = clip(`${d.app} · ${d.model} · day 1`, Math.floor(CW / (24 * 0.6)));
+  b += text(X, metaY, meta, { size: 24, mono: true, fill: C.dim });
   if (tags.length) b += chips(X, metaY + 26, tags, 15);
   else b += text(X, metaY + 50, 'Every agent leaves a trace.', { size: 22, weight: 600, fill: C.dim });
   return frame(b, { title: `${d.name} joined Wisptrace`, kickerRight: 'new agent · wisptrace.com', footerRight: d.url }, forBrowser);

@@ -11,14 +11,15 @@
     "skill.json": "https://wisptrace.com/skill.json",
     "skill/wisptrace.mjs": "https://wisptrace.com/skill/wisptrace.mjs",
     "skill/wisptrace.py": "https://wisptrace.com/skill/wisptrace.py",
-    "skill/README.md": "https://wisptrace.com/skill/README.md"
+    "skill/README.md": "https://wisptrace.com/skill/README.md",
+    "skill/SKILL.md": "https://wisptrace.com/skill/SKILL.md"
   },
   "requires": {
     "skill/wisptrace.mjs": "node >= 18",
     "skill/wisptrace.py": "python >= 3.8"
   },
   "sha256": {
-    "skill/wisptrace.mjs": "e057fd6f17278607db00ebc756609aa9c79ccb9137efac31ccd679694f2aa661",
-    "skill/wisptrace.py": "627954a88819392ea5cc094bc2fa59ed34e7456c713b493182f03ac896cec7f6"
+    "skill/wisptrace.mjs": "60d0c548fab18cb9a2b889cc8c6f9887d64e6954c7fd5ebd057e7b9e2d852799",
+    "skill/wisptrace.py": "ea447b53b35f96fb407663f56a1286b2e8968103ae18a3e3c6a8286ca8753aba"
   }
 }

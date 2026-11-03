@@ -1,4 +1,4 @@
-// Trends (/trends?week=) and Methodology (/methodology). Owned by UI-4.
+// Trends (/trends/2026-W44, one indexable page per week; /trends redirects to the latest) and Methodology (/methodology).
 // Design: docs/design/Trends.dc.html; methodology is long-form in the same visual language. Data: src/data/trends.ts.
 // Every trend number shown here already passed k-anonymity (RULES.TREND_MIN_AGENTS) in the data layer.
 import { Hono } from 'hono';
@@ -8,9 +8,11 @@ import { type DayColumn, type MoverRow, type TopRow, type TrendsPageData, trends
 import { AGENT_TEXT, REPO_URL } from '../lib/agent-text';
 import { fmtInt, fmtMult, pad2 } from '../lib/format';
 import { RULES } from '../lib/rules';
-import { BLACK_FRIDAY, DAY, dayLabel, daysUntil, shiftWeek, weekEnd, weekLabel, weekNumber } from '../lib/time';
+import { BLACK_FRIDAY, DAY, MIN, dayLabel, daysUntil, lastCompleteWeek, shiftWeek, weekEnd, weekLabel, weekNumber } from '../lib/time';
+import { cached } from '../processing/snapshots';
 import { Button, EmptyState, HighlightCard, Kicker } from './components';
 import { Layout, page } from './layout';
+import { notFoundPage } from './errors';
 
 const app = new Hono<AppEnv>();
 const K = RULES.TREND_MIN_AGENTS;
@@ -111,20 +113,42 @@ function watchCopy(d: TrendsPageData, now: number): string {
   return now < curve ? `${first} The daily curve goes public on ${dayLabel(curve)} with two weeks of data.` : first;
 }
 
-app.get('/trends', async c => {
+const WEEK_RE = /^\d{4}-W(0[1-9]|[1-4]\d|5[0-3])$/;
+
+/** The first week with any trace (older weeks have no page), cached. */
+const firstWeek = (env: AppEnv['Bindings']) => cached(env, 'trends:first-week', 10 * MIN, async () =>
+  (await env.DB.prepare('SELECT MIN(week) AS w FROM traces').first<{ w: string | null }>())?.w ?? null);
+
+// /trends always points at the latest complete week; old ?week= links move to the per-week URL for good.
+app.get('/trends', c => {
+  const q = (c.req.query('week') ?? '').toUpperCase().replace(/^(\d{4})-W/, '$1-W');
+  const latest = lastCompleteWeek(Date.now());
+  if (WEEK_RE.test(q) && q <= latest) return c.redirect(`/trends/${q}`, 301);
+  return c.redirect(`/trends/${latest}`, 302);
+});
+
+app.get('/trends/:week', async c => {
   const now = Date.now();
-  const d = await trendsPageData(c.env, { week: c.req.query('week'), now });
+  const raw = c.req.param('week');
+  const week = raw.toUpperCase();
+  if (raw !== week && WEEK_RE.test(week)) return c.redirect(`/trends/${week}`, 301);
+  const latest = lastCompleteWeek(now);
+  const first = await firstWeek(c.env);
+  if (!WEEK_RE.test(week) || week > latest || (week !== latest && (!first || week < first))) return notFoundPage(c);
+  const d = await trendsPageData(c.env, { week, now });
   const h = headline(d);
   const days = daysUntil(BLACK_FRIDAY, now);
   const next = shiftWeek(d.week, 1);
+  const year = new Date(weekEnd(d.week) - DAY).getUTCFullYear();
   return page(c,
-    <Layout c={c} title="Trends" active="trends" css={['trends']} description={`${weekKicker(d.week)}. ${h.text}`}
-      ogImage={`/card/trend/${d.week}.png`} canonical={d.week === d.latest_week ? '/trends' : `/trends?week=${d.week}`}>
+    <Layout c={c} title={`What humans delegated to AI agents · week ${weekNumber(d.week)} ${year}`} active="trends" css={['trends']}
+      description={`${weekKicker(d.week)}. ${h.text} Specific tasks, counted only when ${K}+ different people are behind a number.`}
+      ogImage={`/card/trends/${d.week}.png`} canonical={`/trends/${d.week}`}>
       <div class="tr-head">
         <Kicker>{weekKicker(d.week)}</Kicker>
         <nav class="tr-weeknav" aria-label="Weeks">
-          <a href={`/trends?week=${d.prev_week}`} rel="prev">← week {weekNumber(d.prev_week)}</a>
-          {d.week < d.latest_week ? <a href={next === d.latest_week ? '/trends' : `/trends?week=${next}`} rel="next">week {weekNumber(next)} →</a> : null}
+          {first && d.prev_week >= first ? <a href={`/trends/${d.prev_week}`} rel="prev">← week {weekNumber(d.prev_week)}</a> : <span></span>}
+          {d.week < d.latest_week ? <a href={`/trends/${next}`} rel="next">week {weekNumber(next)} →</a> : null}
         </nav>
       </div>
       <h1 class="h1 tr-h1">{h.node}</h1>

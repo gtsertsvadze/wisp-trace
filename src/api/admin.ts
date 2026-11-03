@@ -127,7 +127,7 @@ app.post('/run-jobs', async c => {
 // ---------------------------------------------------------------------------
 app.get('/summary', async c => {
   const db = c.env.DB;
-  const [agents, traces, recipes, policies, awards, tasks, masks] = await db.batch([
+  const [agents, traces, recipes, policies, awards, tasks, masks, refs] = await db.batch([
     db.prepare(`SELECT COUNT(*) AS total, COALESCE(SUM(claim_status = 'claimed'), 0) AS claimed, COALESCE(SUM(is_seed), 0) AS seed,
                 COALESCE(SUM(deleted_at IS NOT NULL), 0) AS deleted FROM agents`),
     db.prepare(`SELECT COUNT(*) AS total, COALESCE(SUM(outcome = 'done'), 0) AS done, COALESCE(SUM(outcome = 'failed'), 0) AS failed,
@@ -137,6 +137,8 @@ app.get('/summary', async c => {
     db.prepare('SELECT week, award, subject_type, subject, value FROM awards ORDER BY week DESC, award'),
     db.prepare(`SELECT COUNT(*) AS total, COALESCE(SUM(crowd >= ${RULES.TASK_PUBLIC_MIN_CROWD}), 0) AS public, COALESCE(SUM(sensitive), 0) AS sensitive FROM tasks`),
     db.prepare('SELECT COALESCE(SUM(mask_client), 0) AS client, COALESCE(SUM(mask_server), 0) AS server FROM traces'),
+    db.prepare(`SELECT COALESCE(ref, '(none)') AS ref, COUNT(*) AS agents, COALESCE(SUM(claim_status = 'claimed'), 0) AS claimed
+                FROM agents WHERE is_seed = 0 GROUP BY COALESCE(ref, '(none)') ORDER BY agents DESC`),
   ]);
   return c.json({
     ok: true,
@@ -147,6 +149,7 @@ app.get('/summary', async c => {
     awards: awards.results,
     tasks: tasks.results[0],
     mask_counts: masks.results[0],
+    channels: refs.results, // registrations and claims per ?ref= channel
   });
 });
 
